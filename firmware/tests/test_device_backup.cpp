@@ -17,7 +17,7 @@ static DeviceBackup::Contents sample() {
   DeviceBackup::Contents c;
   for(uint32_t i=1;i<=40;++i)c.practice.accept(i,true,5000+i*37,i*20000);
   c.practice.newSession();c.practice.accept(41,true,9100,900000);
-  c.look.select(Appearance::Theme::Amber,Appearance::Effect::Crown);
+  c.look.select(Appearance::Theme::Amber,Appearance::Effect::Lightning);
   c.bests.observe(0,0,true,8800);c.bests.observe(1,1,true,7700);
   c.hasMotion=true;c.motion=trace(41,9100);
   c.settings={7,60,RpmEstimator::Mode::SingleTurn,StickS3SensorProfile::Mode::Tcrt,true};
@@ -46,6 +46,15 @@ int main() {
   assert(n<=MAX_BYTES && get32(buffer.data()+8)==n);
   Contents decoded;assert(decode(buffer.data(),n,decoded) && same(original,decoded));
   assert(std::string(decoded.runtime)=="0.11.0-sticks3-test");
+
+  // Expanded accents travel through the complete USB backup, including the
+  // highest new ID and either saved Flip switch value.
+  for(unsigned theme=0;theme<Appearance::THEMES;++theme)for(bool flipped:{false,true}) {
+    auto trial=original;trial.settings.flipped=flipped;
+    assert(trial.look.select(Appearance::Theme(theme),Appearance::Effect::Lightning));
+    Buffer encoded;const auto length=encode(trial,"0.12.1-sticks3-test",encoded);
+    Contents restored;assert(decode(encoded.data(),length,restored) && same(trial,restored));
+  }
 
   // Base64 lines through the receiver reproduce the exact bytes.
   std::vector<std::string> lines;base64Lines(buffer.data(),n,96,[&](const char *line){lines.push_back(line);});
@@ -122,7 +131,7 @@ int main() {
   assert(practiceStore.save(restore.practice) && lookStore.save(restore.look) && bestStore.save(restore.bests) && motionStore.save(restore.motion));
   PracticeHistory afterHistory;PracticeStore p2;assert(p2.begin(afterHistory) && afterHistory.size()==41 && afterHistory.recent()->rpm==9100);
   Appearance::Config afterLook;AppearanceStore<Appearance::Config> l2;assert(l2.begin(afterLook,"ll-appearance","cfg0","cfg1"));
-  assert(afterLook.theme==Appearance::Theme::Amber && afterLook.effect==Appearance::Effect::Crown);
+  assert(afterLook.theme==Appearance::Theme::Amber && afterLook.effect==Appearance::Effect::Lightning);
   Appearance::Bests afterBests;AppearanceStore<Appearance::Bests> b2;assert(b2.begin(afterBests,"ll-bests","best0","best1"));
   assert(afterBests.rpm[0]==8800 && afterBests.rpm[3]==7700);
   LaunchMotion::Trace afterMotion;MotionStore m2;assert(m2.begin(afterMotion) && afterMotion.number==41);

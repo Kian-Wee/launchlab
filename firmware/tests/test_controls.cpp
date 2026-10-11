@@ -30,9 +30,16 @@ int main() {
   assert(s.holdA()==Effect::Tournament && s.page==Page::Main);
   for(unsigned row=0;row<SETTING_COUNT;++row) {
     s.page=Page::Edit;s.setting=row;s.draft=row==0?3:row==2?40:0;
-    const unsigned original=s.draft,cycle=row==0 || row==2?10:row==5?4:row==6?6:2;
+    const unsigned original=s.draft,cycle=row==0 || row==2?10:row==5?Appearance::THEMES:row==6?7:row==7?3:2;
     for(unsigned i=0;i<cycle;++i)assert(s.tapB()==Effect::Preview);
     assert(s.draft==original);
+  }
+  // Every theme is reachable exactly once from every saved starting choice.
+  for(unsigned start=0;start<Appearance::THEMES;++start) {
+    s.page=Page::Edit;s.setting=unsigned(Setting::Theme);s.draft=start;
+    unsigned visited=0;
+    for(unsigned i=0;i<Appearance::THEMES;++i){visited|=1u<<s.draft;assert(s.tapB()==Effect::Preview);}
+    assert(s.draft==start && visited==(1u<<Appearance::THEMES)-1);
   }
   // Hold/release must never execute both actions, including a synthetic
   // library release click and a new short press immediately afterwards.
@@ -51,7 +58,11 @@ int main() {
     }
   State out;uint8_t view=0;
   assert(decodeWake(LEGACY_WAKE_MAGIC|uint32_t(Page::Settings)|(5u<<9),out,view) && out.setting==SETTING_COUNT);
-  for(uint32_t corrupt:{0u,WAKE_MAGIC|15u,WAKE_MAGIC|uint32_t(Page::Edit),WAKE_MAGIC|(7u<<4),LEGACY_WAKE_MAGIC|(7u<<9),WAKE_MAGIC|0x2000u})
+  // 0.11 layout: seven settings, Back at row 7, view at bit 12.
+  assert(decodeWake(WAKE7_MAGIC|uint32_t(Page::Settings)|(7u<<9)|(1u<<12),out,view) && out.setting==SETTING_COUNT && view==1);
+  assert(decodeWake(WAKE7_MAGIC|uint32_t(Page::Settings)|(6u<<9),out,view) && out.setting==6 && view==0);
+  for(uint32_t corrupt:{0u,WAKE_MAGIC|15u,WAKE_MAGIC|uint32_t(Page::Edit),WAKE_MAGIC|(7u<<4),LEGACY_WAKE_MAGIC|(7u<<9),
+                        WAKE_MAGIC|0x4000u,WAKE_MAGIC|(9u<<9),WAKE7_MAGIC|0x2000u})
     assert(!decodeWake(corrupt,out,view));
   std::cout<<"PASS: consistent actions, visible menu/back, deliberate sessions, staged settings, tournament lock, hold release, wake round trips and corruption\n";
 }

@@ -2,6 +2,7 @@
 """Exercise actual sketch navigation/edit handlers with host peripherals."""
 from pathlib import Path
 import os
+import re
 import subprocess
 import tempfile
 
@@ -20,11 +21,11 @@ def function(name):
     return source[start:cursor]
 prefix=r'''
 #include "controls.h"
-#include "settings_effect_preview.h"
 #include "appearance_store.h"
 #include "analog_tachometer.h"
 #include "rpm_estimator_setting.h"
 #include "display_flip_setting.h"
+#include "display_orientation.h"
 #include "sensor_profile_setting.h"
 #include "power_status.h"
 #include "practice_ui.h"
@@ -40,9 +41,8 @@ prefix+=practice_ui[practice_ui.index('namespace PracticeUI {'):practice_ui.inde
 prefix+=r'''
 static Appearance::Config appearance;static Appearance::Bests personalBests;
 static AppearanceStore<Appearance::Bests> bestStore;static AppearanceStore<Appearance::Config> appearanceStore;static Appearance::Celebration bestEffect;
-static uint32_t clockMs=10000,lastDraw=0;static uint32_t millis(){return clockMs;}
-static SettingsEffectPreview::State settingsEffectPreview;static bool screenReady=true;
-static struct {bool receiving=false;bool active()const{return receiving;}}restoreRx;
+static uint32_t millis(){return 10000;}
+static unsigned soundPreviews=0,effectPreviews=0;static void previewSound(){++soundPreviews;}static void previewEffect(){++effectPreviews;}
 using Controls::Page;
 static Controls::State controls;
 static bool tournamentMode=false,historyPage=false,dirty=false,diagnostics=false,demo=false,motionDemo=false,motionPending=false,settingsSaveError=false,restorePreview=false,displayFlipped=false;
@@ -77,20 +77,34 @@ struct Acquisition {
     return true;
   }
 }acquisition;
-struct {struct {unsigned brightness=102,rotation=0;void setBrightness(unsigned value){brightness=value;}void setRotation(unsigned value){rotation=value;}}Display;}M5;
+struct {struct {unsigned brightness=102,rotation=0;void setBrightness(unsigned value){brightness=value;}void setRotation(unsigned value){rotation=value;}uint8_t getRotation()const{return rotation;}}Display;}M5;
 struct {template<class... T>void printf(const char*,T...){}void println(const char*){}}Serial;
 '''
+# Exercise the actual startup/wake setting load and LCD mapping, in addition
+# to the full edit handlers. No copied physical-orientation implementation.
+load_start=source.index('  if(!DisplayFlipSetting::load(')
+load_statement=source[load_start:source.index(';',load_start)+1]
+boot_rotation=re.findall(r'M5.Display.setRotation\([^;]+;',source)[-1]
+prefix+='\nstatic void restoreDisplayAtBoot(){'+load_statement+boot_rotation+'}\n'
+visible_start=source.index('static bool visibleDisplayFlipped()')
+prefix+='\n'+source[visible_start:source.index('}',visible_start)+1]+'\n'
 tests=r'''
 static void reset(){
-  controls={};settingsEffectPreview={};clockMs=10000;lastDraw=0;screenReady=true;restoreRx.receiving=false;personalBests={};appearance={};appearanceStore={};bestEffect={};tournamentMode=historyPage=dirty=diagnostics=demo=motionDemo=motionPending=settingsSaveError=restorePreview=displayFlipped=false;
+  controls={};appearance={};appearanceStore={};bestEffect={};tournamentMode=historyPage=dirty=diagnostics=demo=motionDemo=motionPending=settingsSaveError=restorePreview=displayFlipped=false;
   historyOffset=newSessionAt=tournamentHintUntil=0;historyView=PracticeUI::View::Recent;tournamentView=TournamentView::RecordingOnly;
   practice={};demoPractice={};latestMotion={};launchFeedback={};inactivity={};brightnessPercent=40;rpmEstimator=RpmEstimator::DEFAULT_MODE;sensorProfile=StickS3SensorProfile::DEFAULT_MODE;
-  acquisition={};prefs={};M5.Display.brightness=102;M5.Display.rotation=0;
+  acquisition={};prefs={};M5.Display.brightness=102;M5.Display.rotation=2;
   Preferences::data.clear();Preferences::zeroLengthKeys.clear();Preferences::failWrite=Preferences::shortRead=false;
   assert(prefs.begin("controls-test",false));assert(appearanceStore.begin(appearance,"controls-appearance","cfg0","cfg1"));
 }
 static void edit(unsigned row){controls.page=Page::Settings;controls.setting=row;syncNavigation();buttonA();assert(controls.page==Page::Edit);}
 int main(){
+  reset();restoreDisplayAtBoot();assert(!displayFlipped && M5.Display.rotation==2 && !prefs.writes);
+  for(bool saved:{true,false}) {
+    assert(DisplayFlipSetting::save(prefs,saved));const auto stored=Preferences::data;
+    displayFlipped=!saved;M5.Display.rotation=99;restoreDisplayAtBoot();
+    assert(displayFlipped==saved && M5.Display.rotation==(saved?0u:2u) && Preferences::data==stored);
+  }
   reset();buttonA();holdB();assert(!launchFeedback.shown() && controls.page==Page::Main);
   reset();edit(2);acquisition.state.phase=AnalogTachometer::Phase::Launch;buttonB();
   assert(controls.draft==50 && brightnessPercent==40 && M5.Display.brightness==102 && restorePreview);
@@ -104,10 +118,18 @@ int main(){
   holdB();assert(controls.page==Page::Settings && brightnessPercent==40 && M5.Display.brightness==102 && !prefs.writes);
   edit(2);buttonB();buttonA();assert(controls.page==Page::Settings && brightnessPercent==50 && M5.Display.brightness==128 && prefs.writes && !settingsSaveError);
   assert(acquisition.begins==acquisition.ends);
-  reset();edit(3);buttonB();assert(!displayFlipped && M5.Display.rotation==2 && !prefs.writes);
-  holdB();assert(M5.Display.rotation==0 && !prefs.writes);
+  reset();edit(3);assert(!visibleDisplayFlipped());buttonB();assert(!displayFlipped && visibleDisplayFlipped() && M5.Display.rotation==0 && !prefs.writes);
+  holdB();assert(!visibleDisplayFlipped() && M5.Display.rotation==2 && !prefs.writes);
   edit(3);buttonB();Preferences::failWrite=true;buttonA();assert(controls.page==Page::Edit && settingsSaveError && !displayFlipped);
-  Preferences::failWrite=false;buttonA();assert(controls.page==Page::Settings && displayFlipped && M5.Display.rotation==2);
+  Preferences::failWrite=false;buttonA();assert(controls.page==Page::Settings && displayFlipped && visibleDisplayFlipped() && M5.Display.rotation==0);
+  const auto flipStored=Preferences::data;edit(3);buttonB();assert(!visibleDisplayFlipped() && displayFlipped && M5.Display.rotation==2);
+  holdB();assert(visibleDisplayFlipped() && M5.Display.rotation==0 && Preferences::data==flipStored);
+  // During a pull the display changes are deferred; cancel returns to the
+  // saved orientation as soon as idle without persisting the draft.
+  edit(3);acquisition.state.phase=AnalogTachometer::Phase::Launch;buttonB();
+  assert(visibleDisplayFlipped() && M5.Display.rotation==0 && restorePreview);
+  holdB();assert(visibleDisplayFlipped() && M5.Display.rotation==0 && restorePreview && Preferences::data==flipStored);
+  acquisition.state.phase=AnalogTachometer::Phase::Ready;previewSetting();assert(!restorePreview && M5.Display.rotation==0);
   reset();edit(0);for(unsigned i=0;i<7;++i)buttonB();assert(controls.draft==10 && inactivity.minutes()==3 && !prefs.writes);
   acquisition.state.phase=AnalogTachometer::Phase::Launch;buttonA();assert(controls.page==Page::Edit && !prefs.writes && settingsSaveError);
   acquisition.state.phase=AnalogTachometer::Phase::Ready;buttonA();assert(inactivity.minutes()==10 && controls.page==Page::Settings);
@@ -138,42 +160,26 @@ int main(){
   assert(acquisition.begins==acquisition.ends);
   reset();const auto untouched=practice.generation();edit(5);buttonB();assert(controls.draft==1 && appearance.theme==Appearance::Theme::Classic);holdB();assert(appearance.theme==Appearance::Theme::Classic);
   edit(5);buttonB();buttonA();assert(appearance.theme==Appearance::Theme::Mint && practice.generation()==untouched && !acquisition.estimatorChanges && !acquisition.profileChanges);
-  edit(6);buttonB();Preferences::failWrite=true;buttonA();assert(settingsSaveError && appearance.effect==Appearance::Effect::Orbit && controls.page==Page::Edit);
-  Preferences::failWrite=false;buttonA();assert(appearance.effect==Appearance::Effect::Flames && controls.page==Page::Settings);
+  // Random is the default and comes first; B steps to Orbit and previews it.
+  edit(6);assert(controls.draft==uint8_t(Appearance::Effect::Random));const unsigned shown=effectPreviews;buttonB();assert(effectPreviews==shown+1);
+  Preferences::failWrite=true;buttonA();assert(settingsSaveError && appearance.effect==Appearance::Effect::Random && controls.page==Page::Edit);
+  Preferences::failWrite=false;buttonA();assert(appearance.effect==Appearance::Effect::Orbit && controls.page==Page::Settings);
   Appearance::Config restored;AppearanceStore<Appearance::Config> reader;assert(reader.begin(restored,"controls-appearance","cfg0","cfg1") && restored.theme==appearance.theme && restored.effect==appearance.effect);
-
-  // Preview uses the actual buttons and poll function but no real result token.
-  reset();controls.page=Page::Settings;controls.setting=6;syncNavigation();
-  pollSettingsEffectPreview(clockMs,acquisition.snapshot());assert(settingsEffectPreview.visible() && settingsEffectPreview.mode()==Appearance::Effect::Orbit);
-  settingsEffectPreview.presented(clockMs);buttonA();buttonB();
-  pollSettingsEffectPreview(clockMs,acquisition.snapshot());assert(settingsEffectPreview.mode()==Appearance::Effect::Flames && appearance.effect==Appearance::Effect::Orbit);
-  const auto generation=practice.generation(),bestGeneration=personalBests.generation(),cfgGeneration=appearance.generation();
-  const auto checkpoints=acquisition.begins,changes=acquisition.estimatorChanges+acquisition.profileChanges;
-  settingsEffectPreview.presented(clockMs);
-  for(unsigned i=0;i<200;++i){clockMs+=50;dirty=false;pollSettingsEffectPreview(clockMs,acquisition.snapshot());if(dirty){lastDraw=clockMs;settingsEffectPreview.presented(clockMs);}}
-  assert(!prefs.writes && practice.generation()==generation && personalBests.generation()==bestGeneration && appearance.generation()==cfgGeneration && !bestEffect.badge());
-  assert(acquisition.begins==checkpoints && acquisition.estimatorChanges+acquisition.profileChanges==changes);
-  for(unsigned busy=0;busy<4;++busy){
-    motionPending=busy==0;restoreRx.receiving=busy==1;screenReady=busy!=2;acquisition.state.phase=busy==3?AnalogTachometer::Phase::Launch:AnalogTachometer::Phase::Ready;
-    pollSettingsEffectPreview(clockMs,acquisition.snapshot());assert(settingsEffectPreview.busy());clockMs+=500;assert(!settingsEffectPreview.frameDue(clockMs,0));
-    motionPending=restoreRx.receiving=false;screenReady=true;acquisition.state.phase=AnalogTachometer::Phase::Ready;
-    pollSettingsEffectPreview(clockMs,acquisition.snapshot());assert(!settingsEffectPreview.busy() && settingsEffectPreview.elapsed(clockMs)==0);settingsEffectPreview.presented(clockMs);
-  }
-  holdB();pollSettingsEffectPreview(clockMs,acquisition.snapshot());assert(controls.page==Page::Settings && settingsEffectPreview.mode()==Appearance::Effect::Orbit && !prefs.writes);
-  buttonA();buttonB();buttonA();pollSettingsEffectPreview(clockMs,acquisition.snapshot());
-  assert(controls.page==Page::Settings && appearance.effect==Appearance::Effect::Flames && settingsEffectPreview.mode()==Appearance::Effect::Flames);
-  const auto appliedWrites=prefs.writes;buttonA();buttonA();assert(prefs.writes==appliedWrites);
-  edit(6);for(unsigned i=0;i<4;++i)buttonB();pollSettingsEffectPreview(clockMs,acquisition.snapshot());assert(settingsEffectPreview.mode()==Appearance::Effect::Off);
-  settingsEffectPreview.presented(clockMs);clockMs+=1000;dirty=false;pollSettingsEffectPreview(clockMs,acquisition.snapshot());assert(!dirty && !bestEffect.badge());
-  holdB();buttonB();pollSettingsEffectPreview(clockMs,acquisition.snapshot());assert(!settingsEffectPreview.visible());
+  // Sound: each B previews the draft level; only Apply saves it, with the theme and effect intact.
+  edit(7);assert(controls.draft==0);const unsigned previews=soundPreviews;buttonB();buttonB();
+  assert(controls.draft==2 && soundPreviews==previews+2 && appearance.sound==Appearance::Sound::Off);
+  holdB();assert(appearance.sound==Appearance::Sound::Off);
+  edit(7);buttonB();buttonA();assert(appearance.sound==Appearance::Sound::Low && controls.page==Page::Settings);
+  {Appearance::Config again;AppearanceStore<Appearance::Config> reread;assert(reread.begin(again,"controls-appearance","cfg0","cfg1") &&
+    again.sound==Appearance::Sound::Low && again.theme==Appearance::Theme::Mint && again.effect==Appearance::Effect::Orbit);}
   reset();holdA();assert(tournamentMode && tournamentView==TournamentView::RecordingOnly);
   buttonA();holdB();assert(tournamentMode && !launchFeedback.shown());buttonB();assert(tournamentView==TournamentView::Rpm);
   holdA();assert(!tournamentMode && controls.page==Page::Main);
-  reset();edit(3);buttonB();cancelSettingEdit();syncNavigation();assert(controls.page==Page::Settings && M5.Display.rotation==0 && !prefs.writes);
-  std::cout<<"PASS: actual control handlers; menu/back, recap, preview rollback, persistence retry, active-pull guard, metric/session boundary, rollback and tournament lock\n";
+  reset();edit(3);buttonB();cancelSettingEdit();syncNavigation();assert(controls.page==Page::Settings && M5.Display.rotation==2 && !prefs.writes);
+  std::cout<<"PASS: actual control handlers; menu/back, recap, preview rollback, persistence retry, active-pull guard, metric/session boundary, rollback, sound preview/apply and tournament lock\n";
 }
 '''
-names=['syncNavigation','toggleFeedback','previewSetting','cancelSettingEdit','commitSetting','newSession','browseOlder','navigate','buttonA','buttonB','holdA','holdB','pollSettingsEffectPreview']
+names=['syncNavigation','toggleFeedback','previewSetting','cancelSettingEdit','commitSetting','newSession','browseOlder','navigate','buttonA','buttonB','holdA','holdB']
 with tempfile.TemporaryDirectory(prefix='launchlab-controls-') as directory:
     directory=Path(directory);cpp=directory/'test.cpp';exe=directory/'test'
     cpp.write_text(prefix+'\n'.join(function(name) for name in names)+tests)

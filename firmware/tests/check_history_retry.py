@@ -36,6 +36,7 @@ prefix = r'''
 #include <vector>
 static Appearance::Config appearance;static Appearance::Bests personalBests;
 static AppearanceStore<Appearance::Bests> bestStore;static AppearanceStore<Appearance::Config> appearanceStore;static Appearance::Celebration bestEffect;
+static Appearance::Effect celebrationEffect(){return appearance.effect==Appearance::Effect::Random?Appearance::Effect::Orbit:appearance.effect;}
 static uint64_t clockUs=1000000;
 static uint32_t millis(){return uint32_t(clockUs/1000);}
 static int64_t esp_timer_get_time(){return clockUs;}

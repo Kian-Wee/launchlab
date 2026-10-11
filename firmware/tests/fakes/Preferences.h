@@ -20,6 +20,7 @@ public:
     auto i=data.find(space+key);if(i==data.end())return 0;
     const size_t n=std::min(size,i->second.size());std::memcpy(out,i->second.data(),n);return shortRead?n-1:n;
   }
+  bool remove(const char *key){return data.erase(space+key)!=0;}
   size_t putBytes(const char *key,const void *bytes,size_t n) {
     if(beforeWrite)beforeWrite();
     if(failWrite)return 0;

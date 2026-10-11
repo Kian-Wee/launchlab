@@ -39,7 +39,7 @@ export function compareVersions(a, b) {
 export function validateCatalog(catalog) {
   compareVersions(catalog.version, catalog.version);
   if (catalog.board !== 'M5StickS3 K150' || catalog.chip !== 'ESP32-S3' || catalog.flashBytes !== 0x800000 || catalog.applicationOffset !== APP_OFFSET) throw new Error('Unsupported board or flash layout.');
-  if (typeof catalog.release !== 'string' || !catalog.release.startsWith(catalog.version + '-sticks3-qre1113-') || !/^[a-z0-9.-]+$/.test(catalog.release) || typeof catalog.runtime !== 'string' || !catalog.runtime.startsWith(catalog.version + '-')) throw new Error('Release identity mismatch.');
+  if (typeof catalog.release !== 'string' || !catalog.release.startsWith(catalog.version + '-sticks3-') || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(catalog.release.slice((catalog.version + '-sticks3-').length)) || typeof catalog.runtime !== 'string' || !catalog.runtime.startsWith(catalog.version + '-')) throw new Error('Release identity mismatch.');
   if (catalog.files?.length !== 4) throw new Error('Incomplete firmware bundle.');
   catalog.files.forEach((file, i) => {
     const [name, offset] = EXPECTED_FILES[i];

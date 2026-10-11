@@ -1,13 +1,14 @@
 #pragma once
 #include <cstdint>
+#include "appearance.h"
 
 // Navigation never starts/stops measurement. Effects are handled by the sketch
 // after the visible state changes; setting writes only happen on Apply.
 namespace Controls {
 enum class Page:uint8_t {Main,Menu,HistoryMenu,History,Battery,Settings,Edit,NewSession,Tournament};
 enum class Effect:uint8_t {None,Recap,BeginEdit,Preview,Apply,CancelEdit,Older,NewSession,Tournament};
-enum class Setting:uint8_t {Sleep,Rpm,Brightness,Flip,Sensor,Theme,BestEffect};
-static constexpr unsigned SETTING_COUNT=7;
+enum class Setting:uint8_t {Sleep,Rpm,Brightness,Flip,Sensor,Theme,BestEffect,Sound};
+static constexpr unsigned SETTING_COUNT=8;
 struct State {
   Page page=Page::Main;
   uint8_t menu=0,history=0,setting=0,draft=0;
@@ -49,8 +50,9 @@ struct State {
           case Setting::Sleep:draft=draft>=10?1:draft+1;break;
           case Setting::Rpm:case Setting::Flip:case Setting::Sensor:draft=!draft;break;
           case Setting::Brightness:draft=draft>=100?10:draft+10;break;
-          case Setting::Theme:draft=(draft+1)%4;break;
-          case Setting::BestEffect:draft=(draft+1)%6;break;
+          case Setting::Theme:draft=(draft+1)%Appearance::THEMES;break;
+          case Setting::BestEffect:draft=uint8_t(Appearance::nextChoice(Appearance::Effect(draft)));break;
+          case Setting::Sound:draft=(draft+1)%3;break;
         }return Effect::Preview;
       case Page::NewSession:startSession=!startSession;break;
       case Page::Tournament:return Effect::Tournament;
@@ -85,19 +87,27 @@ struct Gesture {
     return clicked && !consumed;
   }
 };
-static constexpr uint32_t LEGACY_WAKE_MAGIC=0x4e560000,WAKE_MAGIC=0x4e570000;
+// Saved navigation layouts. 0.10: five settings, setting in 3 bits.
+// 0.11: seven settings, setting in 3 bits, view at bit 12. Now: setting in
+// 4 bits (9-12) and view at bit 13. An older Back row maps to today's Back.
+static constexpr uint32_t LEGACY_WAKE_MAGIC=0x4e560000,WAKE7_MAGIC=0x4e570000,WAKE_MAGIC=0x4e580000;
 inline uint32_t encodeWake(State state,uint8_t tournamentView) {
   if(state.page==Page::Edit)state.page=Page::Settings;
   return WAKE_MAGIC|uint32_t(state.page)|(uint32_t(state.menu)<<4)|
-    (uint32_t(state.history)<<7)|(uint32_t(state.setting)<<9)|(uint32_t(tournamentView)<<12);
+    (uint32_t(state.history)<<7)|(uint32_t(state.setting)<<9)|(uint32_t(tournamentView)<<13);
 }
 inline bool decodeWake(uint32_t value,State &out,uint8_t &tournamentView) {
-  const auto magic=value&0xffffe000;
-  if(magic!=WAKE_MAGIC && magic!=LEGACY_WAKE_MAGIC)return false;
-  State state;state.page=Page(value&15);state.menu=(value>>4)&7;
-  state.history=(value>>7)&3;state.setting=(value>>9)&7;
-  if(magic==LEGACY_WAKE_MAGIC){if(state.setting>5)return false;if(state.setting==5)state.setting=SETTING_COUNT;}
+  State state;state.page=Page(value&15);state.menu=(value>>4)&7;state.history=(value>>7)&3;
+  if((value&0xffffc000)==WAKE_MAGIC){state.setting=(value>>9)&15;tournamentView=(value>>13)&1;}
+  else {
+    const auto magic=value&0xffffe000;
+    if(magic!=WAKE7_MAGIC && magic!=LEGACY_WAKE_MAGIC)return false;
+    const unsigned rows=magic==LEGACY_WAKE_MAGIC?5:7;
+    state.setting=(value>>9)&7;tournamentView=(value>>12)&1;
+    if(state.setting>rows)return false;
+    if(state.setting==rows)state.setting=SETTING_COUNT;
+  }
   if(uint8_t(state.page)>uint8_t(Page::Tournament) || state.page==Page::Edit || state.menu>=6 || state.setting>SETTING_COUNT)return false;
-  out=state;tournamentView=(value>>12)&1;return true;
+  out=state;return true;
 }
 }

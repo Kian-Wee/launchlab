@@ -17,6 +17,7 @@ public:
   std::vector<int> primitives;
   std::vector<int> triangles,usbLines;
   std::vector<std::pair<int,int>> bubbles;
+  std::vector<std::pair<int,int>> liveBubbles;
   int width()const{return 135;}
   void setTextDatum(int){} void setTextColor(uint16_t,uint16_t){}
   int textWidth(const char *s,const int*)const{unsigned n=0;while(s[n])++n;return int(n)*13;}
@@ -26,7 +27,7 @@ public:
   void drawFastVLine(int a,int b,int c,uint16_t ink){drawLine(a,b,a,b+c-1,ink);}
   void drawRect(int a,int b,int c,int d,uint16_t ink){append({2,a,b,c,d,ink});}
   void drawCircle(int a,int b,int c,uint16_t ink){append({3,a,b,c,ink});}
-  void fillCircle(int a,int b,int c,uint16_t ink){append({4,a,b,c,ink});if(c==4)bubbles.emplace_back(a,b);}
+  void fillCircle(int a,int b,int c,uint16_t ink){append({4,a,b,c,ink});if(c==4)bubbles.emplace_back(a,b);if(c==5)liveBubbles.emplace_back(a,b);}
   void fillTriangle(int a,int b,int c,int d,int e,int f,uint16_t ink){append({5,a,b,c,d,e,f,ink});triangles.insert(triangles.end(),{a,b,c,d,e,f,ink});}
 private:
   void append(std::initializer_list<int> values){primitives.insert(primitives.end(),values);}
@@ -45,7 +46,9 @@ struct PracticeFake {}practice;
 struct StoreFake {bool pending(const PracticeFake&)const{return false;}}practiceStore;
 static bool motionPending=false,motionDemo=false,tournamentMode=false,diagnostics=false,historyPage=false,screenReady=true;
 static bool displayFlipped=false;
-static bool visibleDisplayFlipped(){return displayFlipped;}
+static StickS3Level level;
+static StickS3Level::Reading drawnLevel;
+struct {struct {uint8_t rotation=2;uint8_t getRotation()const{return rotation;}}Display;}M5;
 #include "motion_playback_wiring.h"
 static unsigned failures=0,frames=0;
 static void require(bool ok,const char *message) {
@@ -96,14 +99,27 @@ static void schedule(const LaunchMotion::Trace &t,const std::vector<uint32_t> &i
   hostNow=start+span+1000;checkFrame(span+1000);
 }
 int main() {
+  // Actual live-level and recap .ino callsites share applied LCD axes. Check
+  // the four signed physical sensor directions independently of that helper.
+  for(bool flip:{false,true})for(unsigned axis=0;axis<2;++axis)for(float direction:{-1.0f,1.0f}) {
+    level={};hostNow=1000;M5.Display.rotation=flip?0:2;
+    level.feed(axis?0:direction*.5f,axis?direction*.5f:0,std::sqrt(.75f),hostNow);
+    const int physicalSign=flip?1:-1;
+    lgfx::LGFXBase live;drawLiveLevel(live,67);
+    const auto expected=std::pair<int,int>{67+(axis?0:int(direction*physicalSign*32)),165+(axis?int(-direction*physicalSign*32):0)};
+    require(live.liveBubbles==std::vector<std::pair<int,int>>{expected},"actual live level must use LCD rotation for both sensor axes and signed tilts");
+    require(level.reading(hostNow).right==(axis?0:direction),"live display cannot mutate recorded board axes");
+  }
   LaunchMotion::Trace dots;MotionUI::makeDemo(dots,false);
   dots.startLevel={StickS3Level::State::Valid,30,.6f,.8f};
   dots.endLevel={StickS3Level::State::Valid,30,-.8f,.6f};
-  lgfx::LGFXBase normal,flipped;
-  MotionUI::feedback(normal,dots,false,false,1,false);
-  MotionUI::feedback(flipped,dots,false,false,1,true);
-  require(normal.bubbles==std::vector<std::pair<int,int>>{{44,221},{89,219}},"native frozen Start/End dots");
-  require(flipped.bubbles==std::vector<std::pair<int,int>>{{28,201},{109,203}},"180-degree frozen Start/End dots");
+  lgfx::LGFXBase flipOff,flipOn;
+  MotionUI::feedback(flipOff,dots,false,false,1,false);
+  MotionUI::feedback(flipOn,dots,false,false,1,true);
+  require(flipOff.bubbles==std::vector<std::pair<int,int>>{{28,201},{109,203}},"Flip Off uses 180-degree frozen Start/End dots");
+  require(flipOn.bubbles==std::vector<std::pair<int,int>>{{44,221},{89,219}},"Flip On uses native frozen Start/End dots");
+  lgfx::LGFXBase defaultFlip;MotionUI::feedback(defaultFlip,dots,false);
+  require(defaultFlip.primitives==flipOff.primitives,"omitted Flip choice must use Off's new physical orientation");
   require(dots.startLevel.right==.6f && dots.endLevel.down==.6f,"display orientation cannot change the stored launch");
   // Independent display-frame oracle: change every recorded board sample to
   // the screen's upside-down axes before the existing heading normalization.
@@ -115,18 +131,19 @@ int main() {
   }
   for(float progress:{.31f,.51f,.74f,.92f}) {
     lgfx::LGFXBase native,inverted,oracle,restored;
-    MotionUI::feedback(oracle,displayAxes,false,false,progress,false);
-    MotionUI::feedback(native,dots,false,false,progress,false);
-    MotionUI::feedback(inverted,dots,false,false,progress,true);
+    MotionUI::feedback(oracle,displayAxes,false,false,progress,true);
+    MotionUI::feedback(native,dots,false,false,progress,true);
+    MotionUI::feedback(inverted,dots,false,false,progress,false);
     require(!inverted.triangles.empty() && inverted.triangles==oracle.triangles,"flipped 3D body must follow the display axes, including cached replay");
     require((inverted.triangles!=native.triangles)==(progress>.4f),"asymmetric tilt must change direction after display flip while neutral stays aligned");
     require(inverted.usbLines!=oracle.usbLines,"USB marker must stay on the physical USB end, not the logical screen bottom");
-    MotionUI::feedback(restored,dots,false,false,progress,false);
+    MotionUI::feedback(restored,dots,false,false,progress,true);
     require(restored.primitives==native.primitives,"returning to native orientation must restore the same cached frame");
   }
   // Both RPM estimators feed the same trace/recap consumer; RPM selection must
   // not alter its clock. Durations bracket short real pulls and the 2500 ms cap.
-  for(uint32_t duration:{1u,78u,83u,88u,400u,450u,1250u,1800u,2500u}) {
+  for(bool flip:{false,true})for(uint32_t duration:{1u,78u,83u,88u,400u,450u,1250u,1800u,2500u}) {
+    displayFlipped=flip;M5.Display.rotation=flip?0:2;
     auto t=capture(duration);
     for(const auto &intervals:std::vector<std::vector<uint32_t>>{{16},{33},{50},{100},{7,43,120,5,60,200},{50,700,50,50}})
       schedule(t,intervals);

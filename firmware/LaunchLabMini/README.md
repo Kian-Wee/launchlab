@@ -1,12 +1,21 @@
 # LaunchLab Mini for M5StickS3
 
-Current published revision: **0.11.2-sticks3-score-preview**, for **M5StickS3 K150 (ESP32-S3, 8 MB flash / 8 MB OPI PSRAM)** with an analog reflective sensor: **SparkFun QRE1113 analog** or a **TCRT5000** module. [Frozen release and validation](../releases/0.11.2-sticks3-qre1113-scorepreview/README.md).
+Current revision: **0.12.1-sticks3-flip-colors** for **M5StickS3 K150 (ESP32-S3, 8 MB flash / 8 MB OPI PSRAM)**.
+One application supports SparkFun QRE1113 analog and TCRT5000 via the saved Sensor profile setting.
+See [source and build context](../../docs/FIRMWARE_0.12.1.md) and [exact release identity and acceptance](../releases/0.12.1-sticks3-pulse-guard/README.md).
 
-Settings › Theme (Classic, Mint, Amber, Violet) tints the UI, and Settings › High score effect plays an effect on the recap of a new personal best for the active sensor profile and RPM method. Over USB, `K` exports a backup of history, sessions, personal bests, appearance, the saved recap and user settings as one checksummed container, and `R` restores one; the device validates the whole backup before writing anything, then restarts. 0.11.0 was withdrawn: it overflowed the loop task's 8 KB stack and restarted after boot. 0.11.1 keeps large buffers off that stack, and the build fails if a frame exceeds its budget.
+Settings offers ten saved accent themes, Best effect (Random, five effects or Off) and Sound (Off, Low or High).
+The Best effect editor previews the draft once; B cycles, A applies and hold B cancels.
+Real celebrations require a captured valid personal best for the active sensor profile and RPM method.
+Matching optional sound starts on the first displayed effect frame and cancels for a new pull or closing the editor.
+Sound defaults to Off.
+USB `K` and `R` retain the checksummed backup and restore protocol.
+The main screen has small top status text, a raised RPM readout and an enlarged live level.
+Flip Off maps to mounted rotation 2 and Flip On to native rotation 0; saved booleans remain unchanged.
 
-High score effect now previews the saved choice on its Settings row and the draft inside its editor. B advances the draft, A applies, and hold B cancels. A labeled 8120 RPM sample creates no measurement, history record or personal best. The numeric sample stays clear; acquisition and USB restore pause the preview. Real celebrations still require a captured valid new personal best.
-
-The owner reports that local candidate `39ce90a7fbc81aaa8d4f78e5f0a69a216b63e998` works. The final 0.11.2 compiled source differs only in the runtime version string; its software tests and build pass, but this final binary has not had another physical install. 0.11.1 remains available for recovery.
+The single-turn peak estimator discounts an unconfirmed extra optical mark when the next intervals return to the preceding revolution cadence.
+Confirmed faster motion and valid final-turn peaks remain supported; launch confirmation and optical thresholds retain their existing behavior.
+Indistinguishable transient motion and terminal split marks remain limitations; see the release notes.
 
 ## Wiring
 
@@ -23,12 +32,13 @@ Both keep 0.70 hysteresis, 50 kS/s acquisition and three consistent turns to con
 
 ## Controls
 
-USB-C end down by default. Measurement stays on on every screen.
+The mounted Flip Off default uses display rotation 2; Flip On uses native portrait rotation 0.
+Measurement stays on on every screen.
 
 - **Main:** A shows the latest launch recap; B opens the menu. Hold A for one second to enter tournament mode.
 - **Menus:** A opens or applies the highlighted item; B moves to the next choice; hold B goes back one level or cancels an edit. Every list has a Back choice.
 - **Menu items:** History, New session, Battery, Settings, Tournament and Back. History offers Launches, Pull trend and Session trend. New session starts on the next accepted pull and keeps earlier launches.
-- **Settings:** Sleep after, RPM method, Brightness, Flip display, Sensor profile, Theme and High score effect. In an editor the value is centred, with a faint `B next option ->` hint beneath it: B cycles the value, A applies, hold B cancels.
+- **Settings:** Sleep after, RPM method, Brightness, Flip display, Sensor profile, Theme, Best effect and Sound. In an editor the value is centred, with a faint `B next option ->` hint beneath it: B cycles the value, A applies, hold B cancels.
   - Sleep after: 1–10 minutes, 3-minute default.
   - RPM method: 3-turn average (default) or 1-turn peak. The launch floor is 1,000 RPM.
   - Brightness: 10–100% in 10% steps.
@@ -55,7 +65,7 @@ Measured launches, button use and interactive USB commands refresh the inactivit
 
 Run `bash scripts/build-firmware.sh` from the repo root with Arduino CLI installed. Dependencies: ESP32 3.3.0, M5Unified 0.2.23, M5GFX 0.2.30. Host/toolchain differences can change rebuilt bytes; use the frozen archive for exact binary restoration.
 
-Run `bash scripts/test-firmware.sh`: 27 sanitizer-enabled native suites and seven production harnesses, including controls, display flip, sensor-profile storage, appearance and device backup, with a synthetic playback fixture instead of personal practice records. These software checks do not establish physical battery, recovery or calibration acceptance.
+Run `bash scripts/test-firmware.sh`: 28 sanitizer-enabled native suites and nine production harnesses, including controls, display flip, sensor-profile storage, appearance and device backup, with a synthetic playback fixture instead of personal practice records. These software checks do not establish physical battery, recovery or calibration acceptance.
 
 The frozen 0.11.1 application was installed app-only on the owner's M5StickS3 K150: no restarts in a 120 s soak, all 128 history records kept, a backup and restore round trip identical, and the screen, themes and pulls confirmed. Earlier, the 0.10.21 application was installed with complete native readback verification, with NVS, bootloader and partitions preserved. Actual device frames of the Flip and Sensor editors were checked. The user reports the installed firmware working on their device. Earlier revisions in this line had three-pull QRE1113 checks (0.10.14) and a six-pull TCRT5000 check (0.10.17). This is qualitative device acceptance, not long-session or absolute RPM/angle calibration.
 

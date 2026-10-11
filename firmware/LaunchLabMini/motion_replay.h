@@ -1,5 +1,6 @@
 #pragma once
 #include "launch_motion.h"
+#include "display_orientation.h"
 
 // Fixed-center orientation replay. Coordinates below are display units only.
 // Translation, height change, distance, velocity and compass heading are absent.
@@ -31,12 +32,13 @@ struct Vec {
 inline Vec rotate(const LaunchMotion::Quaternion &q,Vec v) {
   const float in[3]={v.x,v.y,v.z};float out[3];q.rotate(in,out);return {out[0],out[1],out[2]};
 }
-inline LaunchMotion::Quaternion forDisplay(LaunchMotion::Quaternion pose,bool flipped) {
+inline LaunchMotion::Quaternion forDisplay(LaunchMotion::Quaternion pose,bool flipEnabled) {
   // Change both board and horizontal world axes by 180 degrees about +Z:
   // Rz(pi) * pose * inverse(Rz(pi)). This reverses screen-right/top tilt like
   // the level dots, preserves gravity-up and yaw, and keeps neutral heading.
   // Apply after cache lookup so a display preview also works on saved traces.
-  if(flipped){pose.x=-pose.x;pose.y=-pose.y;}
+  const auto sign=DisplayOrientation::axisSign(flipEnabled);
+  pose.x*=sign;pose.y*=sign;
   return pose;
 }
 struct Replay {

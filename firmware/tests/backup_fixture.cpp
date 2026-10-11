@@ -8,7 +8,7 @@ int main() {
   DeviceBackup::Contents c;
   for(uint32_t i=1;i<=40;++i)c.practice.accept(i,true,5000+i*37,i*20000);
   c.practice.newSession();c.practice.accept(41,true,9100,900000);
-  c.look.select(Appearance::Theme::Amber,Appearance::Effect::Crown);
+  c.look.select(Appearance::Theme::Amber,Appearance::Effect::Lightning);
   c.bests.observe(0,0,true,8800);c.bests.observe(1,1,true,7700);
   c.hasMotion=true;auto &t=c.motion;
   t.fused=true;t.quality=LaunchMotion::Quality::Valid;t.count=48;t.number=41;t.rpm=9100;t.durationMs=400;t.gravity[2]=1;

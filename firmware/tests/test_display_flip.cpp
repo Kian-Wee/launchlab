@@ -1,4 +1,5 @@
 #include "../LaunchLabMini/display_flip_setting.h"
+#include "../LaunchLabMini/display_orientation.h"
 #include <cassert>
 #include <iostream>
 
@@ -10,7 +11,18 @@ int main() {
   const auto existing=Preferences::data;
   bool flipped=true;
   assert(DisplayFlipSetting::load(prefs,flipped) && !flipped);
+  static_assert(DisplayOrientation::rotation()==2 && DisplayOrientation::axisSign()==-1,
+    "Flip Off remains the default and now uses rotation 2");
+  static_assert(DisplayOrientation::rotation(true)==0 && DisplayOrientation::axisSign(true)==1,
+    "Flip On uses the former Off orientation");
   assert(Preferences::data==existing);
+  // Existing schema-1 Off/On records retain their boolean and exact bytes.
+  for(uint8_t selected:{0,1}) {
+    const uint8_t legacy[]={0x44,1,selected,uint8_t(0x44^1^selected)};
+    prefs.putBytes(DisplayFlipSetting::KEY,legacy,sizeof(legacy));const auto before=Preferences::data;
+    assert(DisplayFlipSetting::load(prefs,flipped) && flipped==bool(selected));
+    assert(DisplayOrientation::rotation(flipped)==(selected?0:2) && Preferences::data==before);
+  }
   for(bool selected:{true,false,true}) {
     assert(DisplayFlipSetting::save(prefs,selected));
     Preferences reboot;reboot.begin("launchlab-mini",false);
@@ -30,5 +42,5 @@ int main() {
   assert(!DisplayFlipSetting::load(prefs,flipped) && !flipped && Preferences::data==corrupt);
   Preferences::zeroLengthKeys.insert(std::string("launchlab-mini")+DisplayFlipSetting::KEY);
   assert(!DisplayFlipSetting::load(prefs,flipped) && !flipped && Preferences::data==corrupt);
-  std::cout<<"PASS: normal default without writes, flip survives restart, other settings/history retained, failed writes and invalid reads retained safely\n";
+  std::cout<<"PASS: Flip Off default maps to rotation 2 without writes, existing Off/On bytes preserved, flip survives restart, other settings/history retained, failed writes and invalid reads retained safely\n";
 }

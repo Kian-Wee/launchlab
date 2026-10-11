@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include "display_orientation.h"
 
 // Gravity-based screen-plane level, fed only by fresh accelerometer samples.
 // This is an aiming aid while still, not a launch-angle measurement.
@@ -19,8 +20,9 @@ public:
         case State::Moving:return "moving";default:return "unavailable";}
     }
   };
-  static Reading forDisplay(Reading reading,bool flipped) {
-    if(flipped){reading.right=-reading.right;reading.down=-reading.down;}
+  static Reading forDisplay(Reading reading,bool flipEnabled) {
+    const auto sign=DisplayOrientation::axisSign(flipEnabled);
+    reading.right*=sign;reading.down*=sign;
     return reading;
   }
   void feed(float x,float y,float z,uint32_t now) {

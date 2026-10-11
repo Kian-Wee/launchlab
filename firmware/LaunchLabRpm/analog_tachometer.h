@@ -187,49 +187,105 @@ private:
   }
   uint64_t rise=0,fall=0,railSince=0,quietSince=0,lastCycle=0,slowStartUs=0;
   uint64_t blankFrom=0,blankUntil=0;
-  uint32_t periods[3]={},nPeriods=0,lastPeriod=0,slowCount=0,motionPeriod=0;
+  uint32_t periods[3]={},nPeriods=0,lastPeriod=0,slowCount=0,motionPeriod=0,motionPreviousPeriod=0;
   float motionDuty=0,motionAmplitude=0;
   uint64_t motionStamp=0;
-  void clearMotion(){motionPeriod=0;motionStamp=0;peakPending=false;}
+  void clearMotion(){motionPeriod=motionPreviousPeriod=0;motionStamp=0;clearSinglePending();}
   float duties[3]={},amplitudes[3]={};
   float validatedDuty=0,validatedAmplitude=0;
   bool peakPending=false;
+  bool peakArrivalChecked=false,splitPending=false;
   uint64_t peakPendingSince=0;
   float pendingRpm=0,pendingAmplitude=0;
+  uint32_t pendingPeriod=0,pendingPreviousPeriod=0;
+  // Optical edges are evaluated on a 100-us grid. Comparing two adjoining
+  // intervals with the preceding one uses three edge timestamps, with up to
+  // 200 us of quantization error. This is not an allowed speed-jump limit.
+  static constexpr uint32_t SPLIT_TOLERANCE_US=200;
+  static bool nearPeriod(uint64_t a,uint64_t b) {
+    return a>b?a-b<=SPLIT_TOLERANCE_US:b-a<=SPLIT_TOLERANCE_US;
+  }
+  void clearSinglePending() {
+    peakPending=peakArrivalChecked=splitPending=false;
+    pendingPeriod=pendingPreviousPeriod=0;pendingRpm=pendingAmplitude=0;
+  }
   void singlePeak(float rpm,float amplitude) {
     if(rpm>singlePeakRpm) {
       singlePeakRpm=rpm;singlePeakAmplitude=amplitude;singlePeakUpdates++;
       if(singleTurnPeak){peakRpm=rpm;peakAmplitude=amplitude;}
     }
   }
-  void offerSingle(float rpm,float amplitude) {
-    if(rpm>singlePeakRpm && (!peakPending || rpm>pendingRpm)) {
+  void commitSinglePending() {
+    if(peakPending && peakArrivalChecked)singlePeak(pendingRpm,pendingAmplitude);
+    clearSinglePending();
+  }
+  void resolveSingleNeighbor(uint32_t period,bool credible) {
+    if(!peakPending)return;
+    if(!peakArrivalChecked || !credible) {
+      singlePeakRejected++;clearSinglePending();return;
+    }
+    if(splitPending) {
+      // A subdivided mark rejoins the preceding full-turn cadence. Preserve
+      // continuing acceleration; only this near-exact split/recovery pattern
+      // vetoes the two candidate intervals. Genuine transient motion with the
+      // identical optical waveform is necessarily ambiguous.
+      if(nearPeriod(period,pendingPreviousPeriod)) {
+        singlePeakRejected++;clearSinglePending();
+      } else commitSinglePending();
+    } else if(pendingPreviousPeriod && pendingPeriod<pendingPreviousPeriod &&
+              period<pendingPreviousPeriod &&
+              nearPeriod(uint64_t(pendingPeriod)+period,pendingPreviousPeriod)) {
+      splitPending=true;
+      const float rpm=60000000.0f/period;
+      if(rpm>pendingRpm){pendingRpm=rpm;pendingAmplitude=signalContrast;}
+      // Validate the second interval's arrival too, even if the first was
+      // faster. Neither half may become a committed peak before recovery.
+      peakArrivalChecked=false;peakPendingSince=nowUs;
+    } else commitSinglePending();
+  }
+  void offerSingle(float rpm,float amplitude,uint32_t period,uint32_t previousPeriod,uint32_t olderPeriod=0) {
+    if(rpm>singlePeakRpm && (!peakPending || rpm>pendingRpm || (!previousPeriod && rpm==pendingRpm))) {
       peakPending=true;peakPendingSince=nowUs;pendingRpm=rpm;pendingAmplitude=amplitude;
+      peakArrivalChecked=splitPending=false;pendingPeriod=period;pendingPreviousPeriod=previousPeriod;
+      // The first half may be slower than an earlier genuine peak, so it need
+      // not have created a candidate. Keep cycle context independently and
+      // recognize a split when its second half first sets a new maximum.
+      if(previousPeriod && olderPeriod && period<olderPeriod && previousPeriod<olderPeriod &&
+         nearPeriod(uint64_t(previousPeriod)+period,olderPeriod)) {
+        splitPending=true;pendingPreviousPeriod=olderPeriod;
+      }
     }
   }
   void clearSequence(){nPeriods=lastPeriod=slowCount=0;lastCycle=slowStartUs=0;}
   void finish(End reason) {
     // The burst ends at the inferred boundary, not at the later instant that
     // a gap / second slow cycle confirms it.
+    // No following full cycle is available at a terminal gap. Keep a clean
+    // arrival-validated final surge, including two genuine faster turns.
+    // A terminal subdivision with identical samples remains indistinguishable.
+    // Commit before revision/launch publication; never revise a saved result.
+    commitSinglePending();
     burstEndUs=reason==End::Slowdown?slowStartUs:lastCycle;
     ended=reason;phase=Phase::Hold;resultUs=nowUs;
-    peakPending=false;
     resultValid=peakRpm>0;resultRpm=peakRpm;resultRevision++;
     if(resultValid)launches++;
     clearSequence();
   }
   void tick() {
     if(!enabled || signalFault)return;
-    if(peakPending && nowUs-peakPendingSince>=500) {
+    if(peakPending && !peakArrivalChecked && nowUs-peakPendingSince>=500) {
       // Check the arrival mark after the 0.5-ms optical mean settles. A much
       // larger mark crosses the threshold earlier and otherwise fakes a short
       // period, even when the preceding completed mark looked ordinary.
       const float arrival=std::max(0.0f,(high?extreme:signalHigh)-signalLow);
       if(phase==Phase::Launch && arrival>=minMark && validatedAmplitude>0 &&
-        arrival<=validatedAmplitude*2.5f && validatedAmplitude<=arrival*2.5f)
-        singlePeak(pendingRpm,pendingAmplitude);
-      else singlePeakRejected++;
-      peakPending=false;
+        arrival<=validatedAmplitude*2.5f && validatedAmplitude<=arrival*2.5f) {
+        peakArrivalChecked=true;
+        // This peak has already passed three-turn confirmation. Retain its
+        // original arrival-only check, even if later activity is malformed.
+        if(!pendingPreviousPeriod)commitSinglePending();
+      }
+      else {singlePeakRejected++;clearSinglePending();}
     }
     if(phase==Phase::Launch || (phase==Phase::Ready && nPeriods)) {
       const uint32_t limit=std::min<uint32_t>(900000,std::max<uint32_t>(30000,2*lastPeriod));
@@ -260,6 +316,8 @@ private:
       rejectedShape++;nPeriods=0;clearMotion();return;
     }
     const float duty=float(highUs)/period;
+    const uint32_t previousPeriod=motionPeriod;
+    const uint32_t olderPeriod=motionPreviousPeriod;
     const float previousDuty=motionDuty,previousAmplitude=motionAmplitude;
     candidateRpm=60000000.0f/period;
     if(!enabled || signalFault)return;
@@ -274,10 +332,17 @@ private:
       fabsf(motionDuty-validatedDuty)<=0.20f &&
       motionAmplitude<=validatedAmplitude*2.5f &&
       validatedAmplitude<=motionAmplitude*2.5f;
+    const bool credible=adjacent && previousCredible &&
+      signalContrast>=minMark && validatedAmplitude>0 &&
+      fabsf(duty-validatedDuty)<=0.20f &&
+      signalContrast<=validatedAmplitude*2.5f &&
+      validatedAmplitude<=signalContrast*2.5f;
+    resolveSingleNeighbor(period,credible);
     if(adjacent && matching) {
       if(phase==Phase::Hold){quietSince=nowUs;rearmExtensions++;}
       else if(phase==Phase::Launch)quietSince=nowUs;
     }
+    motionPreviousPeriod=previousPeriod;
     motionPeriod=period;motionDuty=duty;motionAmplitude=signalContrast;motionStamp=stamp;
     if(lastCycle && stamp-lastCycle>uint64_t(period)*3/2)clearSequence();
     lastCycle=stamp;
@@ -294,15 +359,10 @@ private:
       if(slowCount>=2){finish(End::Slowdown);return;}
     }
     if((singleTurnPeak || trackSingleTurnPeak) && phase==Phase::Launch && candidateRpm>singlePeakRpm) {
-      // No speed-jump or three-turn speed-consistency veto here. Timing and
-      // full-cycle shape already passed above. Require uninterrupted strong
-      // neighboring marks and duty/contrast agreeing with confirmed optics.
-      const bool credible=adjacent && previousCredible &&
-        signalContrast>=minMark && validatedAmplitude>0 &&
-        fabsf(duty-validatedDuty)<=0.20f &&
-        signalContrast<=validatedAmplitude*2.5f &&
-        validatedAmplitude<=signalContrast*2.5f;
-      if(credible){offerSingle(candidateRpm,signalContrast);if(singleTurnPeak)quietSince=nowUs;}
+      // Timing, full-cycle shape and neighboring optics passed above. Defer
+      // a new maximum for the narrow split/recovery check, without an RPM cap
+      // or a three-turn speed-consistency requirement on genuine acceleration.
+      if(credible){offerSingle(candidateRpm,signalContrast,period,previousPeriod,olderPeriod);if(singleTurnPeak)quietSince=nowUs;}
       else singlePeakRejected++;
     }
     lastPeriod=period;
@@ -337,7 +397,7 @@ private:
     if(singleTurnPeak || trackSingleTurnPeak) {
       if(starting) {
         const unsigned fastest=unsigned(bounds.first-periods);
-        if(fastest==(nPeriods-1)%3)offerSingle(60000000.0f/periods[fastest],amplitudes[fastest]);
+        if(fastest==(nPeriods-1)%3)offerSingle(60000000.0f/periods[fastest],amplitudes[fastest],period,0);
         else singlePeak(60000000.0f/periods[fastest],amplitudes[fastest]);
       } else if(adjacent && previousAmplitude>=minMark &&
         fabsf(previousDuty-validatedDuty)<=0.20f && fabsf(duty-validatedDuty)<=0.20f &&
@@ -345,7 +405,7 @@ private:
         signalContrast<=validatedAmplitude*2.5f && validatedAmplitude<=signalContrast*2.5f) {
         // A newly validated optical shape can establish fresh context. Do not
         // retroactively promote an earlier edge next to a malformed mark.
-        offerSingle(candidateRpm,signalContrast);
+        offerSingle(candidateRpm,signalContrast,period,0);
       }
     }
     if(!singleTurnPeak && rpm>peakRpm){peakRpm=rpm;peakAmplitude=*ampBounds.first;}

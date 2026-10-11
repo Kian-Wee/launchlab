@@ -1,5 +1,5 @@
-// Native M5GFX QA covers device fonts; these deliberately conservative host
-// metrics also catch overflow and exercise the narrow-label fallback.
+// Bounds checks for the actual compact renderers. Device fonts are inspected
+// after flashing; these deliberately conservative host metrics catch overflow.
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -12,9 +12,10 @@ static constexpr int top_center=0;
 namespace fonts {static int Font4=4,Font2=2;}
 namespace lgfx {
 struct LGFXBase {
-  unsigned strings=0,footers=0,cycleHints=0,longLabels=0;
+  unsigned strings=0,footers=0,cycleHints=0;
   uint16_t ink=0;
   std::vector<int> valueEdges;
+  std::vector<int> valueFonts;
   int width(){return 135;}
   void setTextDatum(int){}void setTextColor(uint16_t color,uint16_t){ink=color;}
   void fillRect(int x,int y,int w,int h,uint16_t){assert(x>=0 && y>=0 && x+w<=135 && y+h<=240);}
@@ -25,12 +26,8 @@ struct LGFXBase {
     const int width=int(std::strlen(text))*glyph;
     assert(x-width/2>=0 && x+(width+1)/2<=135 && y>=0 && y+height<=240);
     ++strings;if(y==231)++footers;
-    if(!std::strcmp(text,"High score effect")){
-      assert((y==8 || y==64) && x-width/2>=8 && x+(width+1)/2<=127);
-      ++longLabels;
-    }
-    if(!std::strcmp(text,"B next option ->")){assert((y==139 || y==181) && ink==0x39e7);++cycleHints;}
-    else if(y==61 || (y>=86 && y<=95)){valueEdges.push_back(x-width/2);valueEdges.push_back(x+(width+1)/2);}
+    if(!std::strcmp(text,"B next option ->")){assert(y==139 && ink==0x39e7);++cycleHints;}
+    else if(y>=86 && y<=95){valueEdges.push_back(x-width/2);valueEdges.push_back(x+(width+1)/2);valueFonts.push_back(font);}
   }
 };
 }
@@ -39,18 +36,26 @@ int main() {
   using namespace Controls;unsigned renders=0;
   for(unsigned row=0;row<6;++row){lgfx::LGFXBase g;ControlsUI::list(g,"Menu",ControlsUI::MENU,6,row);assert(g.footers==1);++renders;}
   for(unsigned row=0;row<4;++row){lgfx::LGFXBase g;ControlsUI::list(g,"History",ControlsUI::HISTORY,4,row);assert(g.footers==1);++renders;}
-  const uint8_t values[]={10,0,100,1,0,0,0};
-  for(unsigned row=0;row<=SETTING_COUNT;++row){lgfx::LGFXBase g;State state;state.setting=row;ControlsUI::settings(g,state,values);assert(g.footers==1 && g.longLabels==(row>=5));++renders;}
+  uint8_t values[]={10,0,100,1,0,0,0,2};
+  for(unsigned row=0;row<=SETTING_COUNT;++row){lgfx::LGFXBase g;State state;state.setting=row;ControlsUI::settings(g,state,values);assert(g.footers==1);++renders;}
   // Lowest and highest draft for each setting. A named array keeps the values
   // alive for the loop; a conditional initializer_list would dangle.
-  const unsigned extremes[][2]={{1,10},{0,1},{10,100},{0,1},{0,1},{0,3},{0,5}};
+  const unsigned extremes[][2]={{1,10},{0,1},{10,100},{0,1},{0,1},{0,Appearance::THEMES-1},{0,6},{0,2}};
   static_assert(sizeof(extremes)/sizeof(extremes[0])>=SETTING_COUNT,"one range per setting");
   for(unsigned row=0;row<SETTING_COUNT;++row)for(unsigned value:extremes[row]) {
     lgfx::LGFXBase g;State state;state.setting=row;state.draft=value;
     ControlsUI::editor(g,state,true,row==1 || row==4);
     assert(g.footers==1 && g.cycleHints==1);
-    assert(g.longLabels==(row==unsigned(Setting::BestEffect)));
     assert(g.valueEdges.size()==2 && g.valueEdges[0]>=8 && g.valueEdges[1]<=127);++renders;
+  }
+  // Every named palette value stays visible in its Settings row and editor.
+  for(unsigned theme=0;theme<Appearance::THEMES;++theme) {
+    State state;state.setting=unsigned(Setting::Theme);state.draft=theme;values[state.setting]=theme;
+    lgfx::LGFXBase row;ControlsUI::settings(row,state,values);assert(row.footers==1);++renders;
+    lgfx::LGFXBase editor;ControlsUI::editor(editor,state,false,false);
+    assert(editor.footers==1 && editor.cycleHints==1 && editor.valueEdges.size()==2);
+    assert(editor.valueFonts.size()==1 && editor.valueFonts[0]==2);
+    assert(editor.valueEdges[0]>=8 && editor.valueEdges[1]<=127);++renders;
   }
   for(bool start:{false,true}){lgfx::LGFXBase g;ControlsUI::session(g,start);assert(g.footers==1);++renders;}
   for(const char *label:{"Enter tournament","Exit tournament","Cancel change","Back"})for(unsigned elapsed:{0u,999u,1000u,10000u}) {

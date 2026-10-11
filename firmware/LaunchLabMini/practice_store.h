@@ -39,6 +39,13 @@ public:
        !readback->decode(image_.data(),image_.size()) || readback->generation()!=history.generation())return false;
     slot_=next;savedGeneration_=history.generation();return true;
   }
+  // A StickS3 was found with an orphaned 1904 B ESP-IDF RF calibration blob
+  // ("cal_data") in this namespace: its own namespace entry was gone and NVS
+  // had reused the index. Nothing reads it, and its 62 entries are most of the
+  // margin a history save needs in the 20 KB NVS. Only that key is removed.
+  static constexpr const char *ORPHAN_KEY="cal_data";
+  bool hasOrphan(){return ready_ && prefs_.isKey(ORPHAN_KEY);}
+  bool removeOrphan(){return ready_ && prefs_.remove(ORPHAN_KEY) && !prefs_.isKey(ORPHAN_KEY);}
   bool ready()const{return ready_;}
   bool pending(const PracticeHistory &history)const{return history.generation()!=savedGeneration_;}
   uint32_t pendingCount(const PracticeHistory &history)const{return history.generation()-savedGeneration_;}

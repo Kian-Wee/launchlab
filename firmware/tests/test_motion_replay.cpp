@@ -79,15 +79,15 @@ int main() {
   }
   Replay nativeMount,invertedMount;assert(nativeMount.build(mixed) && invertedMount.build(upsideDown));
   for(unsigned i=0;i<Replay::COUNT;++i) {
-    const auto native=nativeMount.pose[i],displayed=forDisplay(invertedMount.pose[i],true);
+    const auto native=nativeMount.pose[i],displayed=forDisplay(invertedMount.pose[i],false);
     assert(LaunchMotion::Quaternion::difference(native,displayed)<.05f);
-    assert(LaunchMotion::Quaternion::difference(native,forDisplay(native,false))<.05f);
-    assert(LaunchMotion::Quaternion::difference(native,forDisplay(forDisplay(native,true),true))<.05f);
+    assert(LaunchMotion::Quaternion::difference(native,forDisplay(native,true))<.05f);
+    assert(LaunchMotion::Quaternion::difference(native,forDisplay(forDisplay(native,false),false))<.05f);
     const auto before=rotate(LaunchMotion::inverse(native),{0,0,1});
-    const auto after=rotate(LaunchMotion::inverse(forDisplay(native,true)),{0,0,1});
+    const auto after=rotate(LaunchMotion::inverse(forDisplay(native,false)),{0,0,1});
     assert(near(after.x,-before.x) && near(after.y,-before.y) && near(after.z,before.z));
   }
-  assert(LaunchMotion::Quaternion::difference(neutralHeading,forDisplay(neutralHeading,true))<.05f);
+  assert(LaunchMotion::Quaternion::difference(neutralHeading,forDisplay(neutralHeading,false))<.05f);
   auto missing=trace();missing.quality=LaunchMotion::Quality::Gap;assert(!rotation.build(missing) && !rotation.valid);
   missing=trace();missing.fused=false;assert(!rotation.build(missing));
   missing=trace();missing.points[0].ms=10;assert(!rotation.build(missing));

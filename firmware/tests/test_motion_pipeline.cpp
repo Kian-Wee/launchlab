@@ -30,7 +30,6 @@ public:
 #include "../LaunchLabMini/motion_ui.h"
 #include "../LaunchLabMini/launch_feedback.h"
 #include "../LaunchLabMini/appearance_store.h"
-#include "../LaunchLabMini/settings_effect_preview.h"
 #include "../LaunchLabMini/rpm_estimator.h"
 #include "../LaunchLabMini/sensor_profile.h"
 #include "../LaunchLabMini/history_checkpoint.h"
@@ -78,14 +77,14 @@ struct InactivityFake {void touch(uint32_t){}}inactivity;
 namespace PracticeUI {enum class View {Other,Battery};}
 static PracticeUI::View historyView=PracticeUI::View::Other;
 static LaunchFeedback launchFeedback;
-static Appearance::Config appearance;static Appearance::Bests personalBests;static AppearanceStore<Appearance::Bests> bestStore;static Appearance::Celebration bestEffect;static bool effectWasMoving=false;
+static Appearance::Config appearance;static Appearance::Bests personalBests;static AppearanceStore<Appearance::Bests> bestStore;static Appearance::Celebration bestEffect,editorEffect;static bool effectWasMoving=false;
+// Random's pick is device-side (esp_random); a fixed pick keeps the fixture deterministic.
+static Appearance::Effect celebrationEffect(){return appearance.effect==Appearance::Effect::Random?Appearance::Effect::Orbit:appearance.effect;}
 static uint16_t themeAccent(){return Appearance::accent(appearance.theme);}
 static StickS3Level level;static StickS3Level::Reading drawnLevel;
 static uint64_t motionStart=0,motionEnd=0;
 static uint32_t motionDrops=0,lastAcceptedAt=0,historyPendingSince=0,lastSaveTry=0,maxSaveUs=0,saveCount=0,saveErrors=0,lastDraw=0,newSessionAt=0;
 static bool motionPending=false,motionDemo=false,historyPage=false,diagnostics=false,demo=false,tournamentMode=false,dirty=false,stress=false,saveError=false,screenReady=true;
-static Controls::State controls;static SettingsEffectPreview::State settingsEffectPreview;
-static struct {bool active()const{return false;}}restoreRx;
 static bool displayFlipped=false;
 static bool visibleDisplayFlipped(){return displayFlipped;}
 static bool restorePreview=false;static uint32_t tournamentHintUntil=0;
@@ -96,6 +95,8 @@ static void pollBattery(uint32_t,const Snapshot&){}
 // exercised with the actual startup/retry functions in check_imu_startup.py.
 static void retryMotion(uint32_t,const Snapshot&){}
 static void pollUsbAwake(uint32_t,const Snapshot&,bool=false){}static void tickPowerLog(uint32_t,const Snapshot&){}static void autoPowerOff(uint32_t,const Snapshot&){}
+// Sound playback is device-only; its scheduling has no effect on capture or drawing here.
+static void tickSound(const Snapshot&){}
 static int actualSourceTime(const LaunchMotion::Trace&,float);
 static float actualProgress(uint32_t);
 struct Frame {uint64_t drawnUs,presentedUs;int sourceMs;bool replay,pending,unavailable;std::string reason;std::vector<int> body;};
@@ -109,7 +110,7 @@ static void recordFrame(const lgfx::LGFXBase &g,uint32_t replayFrameElapsed) {
 static unsigned failures=0,cases=0;
 static void require(bool ok,const char *s){if(!ok){++failures;std::cerr<<"FAIL: "<<s<<'\n';}}
 static void reset(uint64_t startUs=5000000) {
-  hostUs=startUs;controls={};settingsEffectPreview={};acquisition={};launchFeedback={};bestEffect={};personalBests={};bestStore={};effectWasMoving=false;completedTrace=pipelineTrace();latestMotion={};practiceStore={};
+  hostUs=startUs;acquisition={};launchFeedback={};bestEffect={};personalBests={};bestStore={};effectWasMoving=false;completedTrace=pipelineTrace();latestMotion={};practiceStore={};
   motionPending=motionDemo=historyPage=diagnostics=demo=tournamentMode=dirty=stress=saveError=false;screenReady=true;
   drawCostUs=24000;lastDraw=millis();lastSaveTry=maxSaveUs=saveCount=saveErrors=motionDrops=newSessionAt=lastAcceptedAt=historyPendingSince=0;frames.clear();
 }
@@ -209,8 +210,8 @@ int main() {
   reset();Preferences::data.clear();assert(bestStore.begin(personalBests,"pipeline-best","best0","best1"));
   readyAfter(300,false);require(!bestEffect.badge() && bestStore.pending(personalBests),"first accepted pull establishes a silent baseline without flash writes");
   auto newer=event();newer.resultRpm=8120;prepareMotion(newer);productionStep();require(!bestEffect.badge(),"pending capture must never show a best badge");
-  advance(300000);productionStep();require(bestEffect.badge() && bestEffect.moving(millis(),appearance.effect),"strict higher accepted RPM starts once after completed capture is presented");
-  advance(1200000);productionStep();require(bestEffect.badge() && !bestEffect.moving(millis(),appearance.effect),"bounded animation ends but static label remains");
+  advance(300000);productionStep();require(bestEffect.badge() && bestEffect.moving(millis()) && bestEffect.effect()==celebrationEffect(),"strict higher accepted RPM starts once after completed capture is presented");
+  advance(2000000);productionStep();require(bestEffect.badge() && !bestEffect.moving(millis()),"bounded animation ends but static label remains");
   toggleFeedback();toggleFeedback();require(!bestEffect.badge(),"manual replay cannot retrigger the best presentation token");
   prepareMotion(newer);advance(300000);productionStep();require(!bestEffect.badge(),"ties cannot celebrate again");
   newer.resultRpm=8200;prepareMotion(newer);advance(300000);productionStep();require(bestEffect.badge(),"next strict best can celebrate");

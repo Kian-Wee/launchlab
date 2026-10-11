@@ -41,7 +41,7 @@ for entry in index['releases']:
         assert len(data)==f['size'] and hashlib.sha256(data).hexdigest()==f['sha256'], f['path']
     app=(root/'site/public'/c['files'][3]['path']).read_bytes()
     assert app==(frozen/m.get('binary','LaunchLabMini.ino.bin')).read_bytes()
-    known=next(x for x in c['knownApplications'] if x['version']==c['version'])
+    known=next(x for x in c['knownApplications'] if x['version']==c['version'] and x['sha256']==c['files'][3]['sha256'])
     assert known['sha256']==hashlib.sha256(app).hexdigest()
     assert known['md5']==hashlib.md5(app).hexdigest()
     assert known['elfSha256']==app[176:208].hex()

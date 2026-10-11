@@ -11,10 +11,14 @@
 #include "power_diagnostics.h"
 #include <sys/time.h>
 #include <esp32-hal-cpu.h>
+#include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
+#include <nvs.h>
 #include "shake_wake.h"
 #include "wake_ui_state.h"
 #include "rpm_estimator_setting.h"
 #include "display_flip_setting.h"
+#include "display_orientation.h"
 #include "sensor_profile_setting.h"
 #include "controls_ui.h"
 #include "motion_acquisition.h"
@@ -23,15 +27,17 @@
 #include "launch_feedback.h"
 #include "appearance_store.h"
 #include "best_effect_ui.h"
+#include "best_effect_speaker.h"
 #include "device_backup.h"
-#include "settings_effect_preview_ui.h"
+#include "nvs_budget.h"
 
 // loop() runs on an 8 KB task. GCC inlines static helpers called once, and the
 // frames of inlined bodies add up: 0.11.0's loop frame reached 6.9 KB and
 // overflowed on the first status print. Keep heavy or rarely used helpers as
 // real calls so each one uses stack only while it runs.
 #define LOOP_HELPER __attribute__((noinline))
-static constexpr char VERSION[] = "0.11.2-sticks3-score-preview";
+static constexpr char VERSION[] = "0.12.1-sticks3-flip-colors";
+static_assert(sizeof(VERSION)<=DeviceBackup::RUNTIME_BYTES,"Runtime must fit the USB backup header");
 #ifndef LAUNCHLAB_CPU_MHZ
 #define LAUNCHLAB_CPU_MHZ 80
 #endif
@@ -50,9 +56,12 @@ static Appearance::Bests personalBests;
 static AppearanceStore<Appearance::Config> appearanceStore;
 static AppearanceStore<Appearance::Bests> bestStore;
 static Appearance::Celebration bestEffect;
+// The Best effect editor previews the draft around its value card.
+static Appearance::Celebration editorEffect;
+// Random's next pick, chosen ahead of the next best so its sound can render.
+static Appearance::Effect upcomingEffect=Appearance::Effect::Off;
 static BestEffectUI::Renderer bestEffectRenderer;
 static bool effectWasMoving=false;
-static SettingsEffectPreview::State settingsEffectPreview;
 static PracticeUI::View historyView=PracticeUI::View::Recent;
 static bool historyPage=false,demo=false,saveError=false;
 static bool tournamentMode=false;
@@ -70,7 +79,7 @@ static constexpr uint32_t HISTORY_SAVE_RETRY_MS=5000;
 static uint32_t lastAcceptedAt=0,historyPendingSince=0;
 static bool screenReady=false;
 static bool diagnostics=false,extPower=false,stress=false,dirty=true;
-static uint32_t lastDraw=0,lastStatus=0,lastRevision=0,maxDrawUs=0,uiStalls=0;
+static uint32_t lastDraw=0,lastStatus=0,lastRevision=0,maxDrawUs=0,maxEffectUs=0,uiStalls=0;
 static uint32_t lastImuPoll=0,maxImuPollUs=0;
 static StickS3Level::Reading drawnLevel;
 static InactivityTimer inactivity;
@@ -96,6 +105,16 @@ RTC_DATA_ATTR static SleepReceipt sleepReceipt={};
 static uint8_t pm1WakeFlags=0;
 static bool pm1WakeValid=false;
 static StickS3MotionAcquisition imuAcquisition;
+static BestEffectSpeaker soundPlayer(imuAcquisition);
+// Which sound is playing: a celebration stops when its recap goes, a Settings
+// preview when its editor closes. A requested sound that is not rendered yet
+// waits for the idle slices rather than stalling the UI loop to render it.
+static bool celebrationSound=false,soundPreview=false;
+static struct {bool active=false,celebration=false;Appearance::Effect effect=Appearance::Effect::Off;Appearance::Sound level=Appearance::Sound::Off;} soundRequest;
+// A celebration sound that cannot start within this long after its effect is dropped.
+static constexpr uint32_t SOUND_LATE_MS=300;
+static void requestSound(Appearance::Effect effect,Appearance::Sound level,bool celebration);
+static Appearance::Effect celebrationEffect();static Appearance::Effect soundTarget();
 static constexpr uint32_t MOTION_INIT_RETRY_MS=5000,MOTION_DATA_TIMEOUT_MS=250;
 static uint32_t motionInitAttempts=0,lastMotionInit=0;
 static bool motionInitPaired=false,motionInitSuccess=false;
@@ -153,7 +172,9 @@ LOOP_HELPER static void retryMotion(uint32_t now,const Snapshot &s) {
 }
 
 static uint8_t backlightValue(){return (unsigned(brightnessPercent)*255+50)/100;}
-static bool visibleDisplayFlipped(){return controls.page==Controls::Page::Edit && controls.setting==3?bool(controls.draft):displayFlipped;}
+// During a pull the preview can be deferred. Sensor coordinates must follow
+// the LCD orientation that was actually applied, rather than an unseen draft.
+static bool visibleDisplayFlipped(){return DisplayOrientation::flipForRotation(M5.Display.getRotation());}
 static Appearance::Theme visibleTheme(){return controls.page==Controls::Page::Edit && controls.setting==5?Appearance::Theme(controls.draft):appearance.theme;}
 static uint16_t themeAccent(){return Appearance::accent(visibleTheme());}
 static void cancelSettingEdit();
@@ -208,6 +229,32 @@ static const char *tournamentViewName() {
   }
 }
 
+// Internal RAM headroom for task stacks, drivers and the UI canvas. The
+// minimum is the low-water mark since boot, so it covers backup and restore.
+LOOP_HELPER static void heapStatus() {
+  constexpr uint32_t INTERNAL=MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT;
+  const void *canvas=screenReady?screen.getBuffer():nullptr;
+  Serial.printf("HEAP_STATUS internal_free=%u internal_largest=%u internal_min_free=%u psram_free=%u psram_largest=%u canvas=%s canvas_bytes=%u\n",
+    unsigned(heap_caps_get_free_size(INTERNAL)),unsigned(heap_caps_get_largest_free_block(INTERNAL)),
+    unsigned(heap_caps_get_minimum_free_size(INTERNAL)),unsigned(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+    unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
+    !canvas?"none":esp_ptr_internal(canvas)?"internal":"psram",unsigned(screenReady?screen.bufferLength():0));
+}
+
+// NVS entries; a history save needs one rewrite's worth free, and a negative
+// headroom means the next history save would fail for lack of space.
+static bool nvsAvailable(unsigned &available){
+  nvs_stats_t stats{};if(nvs_get_stats(nullptr,&stats)!=ESP_OK)return false;
+  available=unsigned(stats.available_entries);return true;
+}
+LOOP_HELPER static void nvsStatus() {
+  nvs_stats_t stats{};const esp_err_t error=nvs_get_stats(nullptr,&stats);
+  Serial.printf("NVS_STATUS ok=%d used_entries=%u available_entries=%u total_entries=%u namespaces=%u history_save_entries=%u history_headroom=%d\n",
+    error==ESP_OK,unsigned(stats.used_entries),unsigned(stats.available_entries),unsigned(stats.total_entries),
+    unsigned(stats.namespace_count),NvsBudget::blobEntries(PracticeHistory::IMAGE_BYTES),
+    NvsBudget::headroom(unsigned(stats.available_entries),PracticeHistory::IMAGE_BYTES));
+}
+
 LOOP_HELPER static void status() {
   const Snapshot s=acquisition.snapshot();
   // Least free stack the loop task has had since boot; 0.11.0 overflowed its 8 KB.
@@ -229,13 +276,15 @@ LOOP_HELPER static void status() {
     RpmEstimator::name(s.estimator),s.sustainedPeakRpm,s.singlePeakRpm,
     (unsigned long)s.singlePeakUpdates,(unsigned long)s.singlePeakRejected);
   Serial.printf("TOURNAMENT_STATUS enabled=%d display=%s persistent=wake\n",tournamentMode,tournamentViewName());
+  soundPlayer.status(appearance.sound);
   Serial.printf("UI_STATUS page=%u menu=%u history=%u setting=%u draft=%u recording=always\n",
     unsigned(controls.page),controls.menu,controls.history,controls.setting,controls.draft);
-  Serial.printf("PERF acquisition_core=0 ui_core=%d processing_pct=%.2f max_batch_us=%lu frame_budget_us=5120 max_read_gap_us=%lu stack_free=%lu invalid_frames=%lu lost_events=%lu max_draw_us=%lu ui_stalls=%lu stress=%d heap_free=%lu psram_free=%lu\n",
+  Serial.printf("PERF acquisition_core=0 ui_core=%d processing_pct=%.2f max_batch_us=%lu frame_budget_us=5120 max_read_gap_us=%lu stack_free=%lu invalid_frames=%lu lost_events=%lu max_draw_us=%lu max_effect_us=%lu ui_stalls=%lu stress=%d heap_free=%lu psram_free=%lu\n",
     xPortGetCoreID(),s.processingPercent,(unsigned long)s.maxBatchUs,(unsigned long)s.maxReadGapUs,
     (unsigned long)s.stackFree,(unsigned long)s.invalidFrames,(unsigned long)s.lostEvents,
-    (unsigned long)maxDrawUs,(unsigned long)uiStalls,stress,
+    (unsigned long)maxDrawUs,(unsigned long)maxEffectUs,(unsigned long)uiStalls,stress,
     (unsigned long)ESP.getFreeHeap(),(unsigned long)ESP.getFreePsram());
+  heapStatus();nvsStatus();
   const auto tilt=level.reading(millis());const float *acc=level.lastAccel();
   Serial.printf("LEVEL_STATUS imu_ready=%d imu_type=%d state=%s degrees=%.2f accel_g=%.3f,%.3f,%.3f samples=%lu rejected=%lu max_poll_us=%lu draw_buffer=%d\n",
     M5.Imu.isEnabled(),int(M5.Imu.getType()),tilt.name(),tilt.degrees,acc[0],acc[1],acc[2],
@@ -341,7 +390,7 @@ static void drawBattery(lgfx::LGFXBase &g,uint32_t now) {
 }
 
 static void drawSettings(lgfx::LGFXBase &g) {
-  const uint8_t values[]={inactivity.minutes(),uint8_t(rpmEstimator),brightnessPercent,uint8_t(displayFlipped),uint8_t(sensorProfile),uint8_t(appearance.theme),uint8_t(appearance.effect)};
+  const uint8_t values[]={inactivity.minutes(),uint8_t(rpmEstimator),brightnessPercent,uint8_t(displayFlipped),uint8_t(sensorProfile),uint8_t(appearance.theme),uint8_t(appearance.effect),uint8_t(appearance.sound)};
   ControlsUI::settings(g,controls,values);
 }
 
@@ -361,7 +410,7 @@ LOOP_HELPER static void exportSignal() {
 }
 
 static void drawLiveLevel(lgfx::LGFXBase &view,int cx) {
-    const int cy=172,radius=31;
+    const int cy=165,radius=38;
     view.setTextColor(TFT_DARKGREY,TFT_BLACK);
     view.drawCircle(cx,cy,radius,TFT_DARKGREY);
     view.drawFastHLine(cx-radius+3,cy,2*radius-5,TFT_DARKGREY);
@@ -370,7 +419,7 @@ static void drawLiveLevel(lgfx::LGFXBase &view,int cx) {
     drawnLevel=StickS3Level::forDisplay(level.reading(millis()),visibleDisplayFlipped());
     if(drawnLevel.valid()) {
       const auto color=drawnLevel.degrees<=2?themeAccent():TFT_ORANGE;
-      view.fillCircle(cx+lroundf(drawnLevel.right*25),cy+lroundf(drawnLevel.down*25),5,color);
+      view.fillCircle(cx+lroundf(drawnLevel.right*32),cy+lroundf(drawnLevel.down*32),5,color);
       char angle[20];snprintf(angle,sizeof(angle),"%.1f deg",drawnLevel.degrees);
       view.setTextColor(color,TFT_BLACK);view.drawString(angle,cx,207,2);
     } else {
@@ -378,14 +427,7 @@ static void drawLiveLevel(lgfx::LGFXBase &view,int cx) {
     }
 }
 
-LOOP_HELPER static void pollSettingsEffectPreview(uint32_t now,const Snapshot &s){
-  const bool busy=!screenReady || motionPending || restoreRx.active() || s.phase==AnalogTachometer::Phase::Launch;
-  if(settingsEffectPreview.sync(controls,appearance.effect,appearance.theme,busy))dirty=true;
-  if(settingsEffectPreview.frameDue(now,lastDraw))dirty=true;
-}
-
 LOOP_HELPER static void draw(const Snapshot &s) {
-  const uint32_t previewFrameAt=millis();
   const int64_t started=esp_timer_get_time();
   ControlsUI::accent=themeAccent();
   const uint32_t replayFrameElapsed=launchFeedback.replayElapsed(millis());
@@ -396,9 +438,11 @@ LOOP_HELPER static void draw(const Snapshot &s) {
   const int cx=view.width()/2;
   view.setTextDatum(top_center);
   view.setTextColor(TFT_WHITE,TFT_BLACK);
-  if(!tournamentMode)view.drawString(newSessionAt && millis()-newSessionAt<1500?"New session ready":"LaunchLab Mini",cx,8,2);
-  view.setTextColor(s.ready && !s.signalFault?TFT_GREEN:TFT_ORANGE,TFT_BLACK);
-  if(!tournamentMode)view.drawString(s.stateName(),cx,32,2);
+  if(!tournamentMode && diagnostics) {
+    if(newSessionAt && millis()-newSessionAt<1500)view.drawString("New session ready",cx,8,2);
+    view.setTextColor(s.ready && !s.signalFault?TFT_GREEN:TFT_ORANGE,TFT_BLACK);
+    view.drawString(s.stateName(),cx,32,2);
+  }
   view.setTextColor(TFT_WHITE,TFT_BLACK);
   if(tournamentMode) {
     if(!s.ready || s.signalFault) {
@@ -435,22 +479,38 @@ LOOP_HELPER static void draw(const Snapshot &s) {
       case Controls::Page::Settings:drawSettings(view);break;
       case Controls::Page::Edit:ControlsUI::editor(view,controls,settingsSaveError,
         (controls.setting==1 && controls.draft!=uint8_t(rpmEstimator)) ||
-        (controls.setting==4 && controls.draft!=uint8_t(sensorProfile)));break;
+        (controls.setting==4 && controls.draft!=uint8_t(sensorProfile)));
+        // The previewed effect frames the value text inside its card.
+        if(screenReady && controls.setting==6 && editorEffect.badge()) {
+          const int64_t effectStarted=esp_timer_get_time();BestEffectUI::Renderer::Anchor card;
+          card.top=72;card.bottom=128;card.left=8;card.right=view.width()-9;
+          bestEffectRenderer.draw({static_cast<uint16_t *>(screen.getBuffer()),screen.width(),screen.height()},
+            editorEffect.effect(),editorEffect.elapsed(millis()),themeAccent(),card);
+          maxEffectUs=std::max(maxEffectUs,uint32_t(esp_timer_get_time()-effectStarted));
+        }
+        break;
       case Controls::Page::NewSession:ControlsUI::session(view,controls.startSession);break;
       case Controls::Page::Battery:drawBattery(view,millis());break;
       default:PracticeUI::draw(view,demo?demoPractice:practice,historyView,historyOffset,demo,themeAccent());break;
     }
-    SettingsEffectPreview::draw(view,settingsEffectPreview,controls.page,bestEffectRenderer,
-      previewFrameAt,themeAccent(),screenReady,controls.page==Controls::Page::Edit && settingsSaveError);
   } else if(launchFeedback.shown()) {
     view.fillScreen(TFT_BLACK);
     MotionUI::feedback(view,motionDemo?demoMotion:latestMotion,
       motionPending && !motionDemo,motionDemo,MotionReplay::playbackProgress(motionDemo?demoMotion:latestMotion,replayFrameElapsed),visibleDisplayFlipped(),themeAccent(),!motionDemo && bestEffect.badge());
     ControlsUI::footer(view,"A Main  B Menu");
     // Direct-draw fallback stays functional without reading the hardware LCD.
-    if(screenReady && !motionDemo && !motionPending && bestEffect.badge())
-      bestEffectRenderer.draw(view,appearance.effect,bestEffect.elapsed(millis()),themeAccent());
+    if(screenReady && !motionDemo && !motionPending && bestEffect.badge()) {
+      const int64_t effectStarted=esp_timer_get_time();
+      bestEffectRenderer.draw({static_cast<uint16_t *>(screen.getBuffer()),screen.width(),screen.height()},
+        bestEffect.effect(),bestEffect.elapsed(millis()),themeAccent());
+      maxEffectUs=std::max(maxEffectUs,uint32_t(esp_timer_get_time()-effectStarted));
+    }
   } else {
+    const bool sessionNotice=newSessionAt && millis()-newSessionAt<1500 &&
+      s.ready && !s.signalFault && !s.suspended && s.phase==AnalogTachometer::Phase::Ready;
+    const char *status=sessionNotice?"New session ready":s.stateName();
+    view.setTextColor(sessionNotice?TFT_WHITE:s.ready && !s.signalFault?TFT_GREEN:TFT_ORANGE,TFT_BLACK);
+    view.drawString(status,cx,8,2);
     char rpm[16];
     if(s.valid)snprintf(rpm,sizeof(rpm),"%.0f",s.resultRpm);
     else snprintf(rpm,sizeof(rpm),"--");
@@ -458,8 +518,8 @@ LOOP_HELPER static void draw(const Snapshot &s) {
     // Keep large values inside the narrow portrait width as well.
     const int rpmFont=view.textWidth(rpm,&fonts::Font6)<=view.width()-8?6:4;
     view.setTextColor(visibleTheme()==Appearance::Theme::Classic?TFT_WHITE:themeAccent(),TFT_BLACK);
-    view.drawString(rpm,cx,53,rpmFont);
-    view.drawString("RPM",cx,100,2);
+    view.drawString(rpm,cx,47,rpmFont);
+    view.drawString("RPM",cx,99,2);
     drawLiveLevel(view,cx);
   }
   if(!tournamentMode && (diagnostics || (!historyPage && !launchFeedback.shown()))) {
@@ -471,12 +531,23 @@ LOOP_HELPER static void draw(const Snapshot &s) {
     ControlsUI::hold(view,tournamentMode?"Exit tournament":"Enter tournament",now-M5.BtnA.lastChange(),1000);
   else if(M5.BtnB.isPressed() && !gestureB.consumed && (controls.page!=Controls::Page::Main || launchFeedback.shown()) && !tournamentMode)
     ControlsUI::hold(view,controls.page==Controls::Page::Edit?"Cancel change":"Back",now-M5.BtnB.lastChange(),1000);
-  if(screenReady){acquisition.displayBoundary(true);M5.Display.startWrite();screen.pushSprite(0,0);}
+  // An internal canvas is pushed by DMA, which endWrite does not wait for.
+  // Wait so the transfer stays inside the boundary marks and the next frame
+  // cannot overwrite pixels still being sent.
+  if(screenReady){acquisition.displayBoundary(true);M5.Display.startWrite();screen.pushSprite(0,0);M5.Display.waitDMA();}
   M5.Display.endWrite();
   acquisition.displayBoundary(false);
-  if(historyPage)settingsEffectPreview.presented(millis(),previewFrameAt);
   if(!tournamentMode && !diagnostics && !historyPage && launchFeedback.shown() && !motionDemo && !motionPending)
     bestEffect.presented(millis());
+  // The sound starts with the effect's first presented frame.
+  if(controls.page==Controls::Page::Edit && controls.setting==6)editorEffect.presented(millis());
+  if(bestEffect.takeCue()) {
+    requestSound(bestEffect.effect(),appearance.sound,true);
+    // Keep this pick's clip ready until its first frame has started playback.
+    // Only a presented celebration consumes Random's next pick.
+    if(appearance.effect==Appearance::Effect::Random)upcomingEffect=Appearance::pick(esp_random(),bestEffect.effect());
+  }
+  if(editorEffect.takeCue())requestSound(editorEffect.effect(),appearance.sound,false);
   launchFeedback.replayPresented(millis(),!tournamentMode && !diagnostics && !historyPage &&
     (!motionPending || motionDemo) && (motionDemo?demoMotion:latestMotion).valid() && (motionDemo?demoMotion:latestMotion).fused,replayFrameElapsed);
   if(!motionDemo && !replayWasStarted && launchFeedback.replayStarted())
@@ -536,7 +607,8 @@ LOOP_HELPER static void prepareMotion(const Snapshot &event) {
   if(motionPending)++motionDrops;
   latestMotion={};latestMotion.number=practice.recent()->number;latestMotion.rpm=event.resultRpm;
   const bool beat=bestStore.ready() && personalBests.observe(unsigned(event.sensorProfile),unsigned(event.estimator),event.valid,event.resultRpm);
-  bestEffect.queue(beat && !tournamentMode && !historyPage && !diagnostics,latestMotion.number);
+  const bool celebrate=beat && !tournamentMode && !historyPage && !diagnostics;
+  bestEffect.queue(celebrate,latestMotion.number,celebrate?celebrationEffect():Appearance::Effect::Off);
   motionStart=event.burstStartHostUs;motionEnd=event.burstEndHostUs;motionPending=true;
   // Update the recording regardless of navigation, without stealing an edit
   // or revealing results in tournament. Main/recap alone follows new pulls.
@@ -597,13 +669,49 @@ LOOP_HELPER static void previewSetting() {
   const auto s=acquisition.snapshot();
   if(s.phase==AnalogTachometer::Phase::Launch){restorePreview=true;return;}
   if(restorePreview) {
-    M5.Display.setBrightness(backlightValue());M5.Display.setRotation(displayFlipped?2:0);
+    M5.Display.setBrightness(backlightValue());M5.Display.setRotation(DisplayOrientation::rotation(displayFlipped));
     restorePreview=false;
   }
   if(controls.page==Controls::Page::Edit) {
     if(controls.setting==2)M5.Display.setBrightness((unsigned(controls.draft)*255+50)/100);
-    if(controls.setting==3)M5.Display.setRotation(controls.draft?2:0);
+    if(controls.setting==3)M5.Display.setRotation(DisplayOrientation::rotation(bool(controls.draft)));
   }
+}
+// Random's upcoming pick stays available until a celebration is presented.
+LOOP_HELPER static Appearance::Effect upcoming() {
+  if(!Appearance::drawn(unsigned(upcomingEffect)))upcomingEffect=Appearance::pick(esp_random(),Appearance::Effect::Off);
+  return upcomingEffect;
+}
+LOOP_HELPER static Appearance::Effect celebrationEffect() {
+  if(appearance.effect!=Appearance::Effect::Random)return appearance.effect;
+  return upcoming();
+}
+// Keep a queued recap's clip intact until its first presented frame takes the
+// sound cue, including USB previews of an effect other than the saved one.
+LOOP_HELPER static Appearance::Effect soundTarget(){
+  if(bestEffect.badge() && !bestEffect.started())return bestEffect.effect();
+  return appearance.effect==Appearance::Effect::Random?upcoming():appearance.effect;
+}
+// Plays now if the sound is rendered, otherwise once the idle slices finish it.
+LOOP_HELPER static void requestSound(Appearance::Effect effect,Appearance::Sound level,bool celebration) {
+  soundRequest={};
+  if(level==Appearance::Sound::Off){soundPlayer.stop();celebrationSound=soundPreview=false;return;}
+  soundRequest.active=true;soundRequest.celebration=celebration;soundRequest.effect=effect;soundRequest.level=level;
+  if(!soundPlayer.prepared(effect))return;
+  const bool started=soundPlayer.play(effect,level);
+  (celebration?celebrationSound:soundPreview)=started;soundRequest.active=false;
+}
+// Each B in the Sound editor plays the current effect at the draft level.
+LOOP_HELPER static void previewSound(){requestSound(soundTarget(),Appearance::Sound(controls.draft),false);}
+// Each B in the Best effect editor, and opening it, plays the draft around the
+// value card (with its sound when Sound is on); Random shows a random pick.
+LOOP_HELPER static void previewEffect() {
+  static Appearance::Effect lastShown=Appearance::Effect::Off;
+  const auto choice=Appearance::Effect(controls.draft);
+  editorEffect.clear();dirty=true;
+  if(!Appearance::drawn(unsigned(choice)) && choice!=Appearance::Effect::Random){soundPlayer.stop();soundPreview=false;soundRequest={};return;}
+  lastShown=choice==Appearance::Effect::Random?Appearance::pick(esp_random(),lastShown):choice;
+  editorEffect.queue(true,1,lastShown);editorEffect.captured(1);
 }
 static void cancelSettingEdit() {
   if(controls.page==Controls::Page::Edit)controls.page=Controls::Page::Settings;
@@ -650,10 +758,11 @@ static void commitSetting() {
       if(saved && next!=sensorProfile){sensorProfile=next;practice.newSession();launchFeedback.clear();}
       break;
     }
-    case Controls::Setting::Theme:case Controls::Setting::BestEffect: {
+    case Controls::Setting::Theme:case Controls::Setting::BestEffect:case Controls::Setting::Sound: {
       auto next=appearance;
       if(!next.select(controls.setting==5?Appearance::Theme(value):appearance.theme,
-                      controls.setting==6?Appearance::Effect(value):appearance.effect))break;
+                      controls.setting==6?Appearance::Effect(value):appearance.effect,
+                      controls.setting==7?Appearance::Sound(value):appearance.sound))break;
       saved=appearanceStore.save(next);if(saved)appearance=next;
       break;
     }
@@ -686,9 +795,13 @@ static void navigate(Controls::Effect effect,Controls::Page previous) {
       settingsSaveError=false;
       controls.draft=controls.setting==0?inactivity.minutes():controls.setting==1?uint8_t(rpmEstimator):controls.setting==2?brightnessPercent:
         controls.setting==3?uint8_t(displayFlipped):controls.setting==4?uint8_t(sensorProfile):
-        controls.setting==5?uint8_t(appearance.theme):uint8_t(appearance.effect);
+        controls.setting==5?uint8_t(appearance.theme):controls.setting==6?uint8_t(appearance.effect):uint8_t(appearance.sound);
+      if(controls.setting==6)previewEffect();
       break;
-    case Controls::Effect::Preview:settingsSaveError=false;previewSetting();break;
+    case Controls::Effect::Preview:settingsSaveError=false;previewSetting();
+      if(controls.setting==6)previewEffect();
+      if(controls.setting==7)previewSound();
+      break;
     case Controls::Effect::Apply:commitSetting();break;
     case Controls::Effect::CancelEdit:cancelSettingEdit();break;
     case Controls::Effect::Older:browseOlder();break;
@@ -891,6 +1004,7 @@ LOOP_HELPER static void finishRestore(const Snapshot &s) {
     // Earlier records may already hold the restored values; restoring again is safe.
     Serial.println("RESTORE_ERROR reason=write_failed written=partial");dirty=true;return;
   }
+  heapStatus();
   Serial.println("RESTORE_OK restarting=1");Serial.flush();
   delay(200);ESP.restart();
 }
@@ -921,6 +1035,12 @@ LOOP_HELPER static void checkStorage() {
   if(scratch.isKey("history1"))scratch.remove("history1");
   bool ok=!scratch.isKey("history0") && !scratch.isKey("history1");
   const bool clean=ok;
+  // Two scratch slots plus a rewrite in flight do not fit beside real history
+  // in the 20 KB NVS; check first rather than fill it until a write fails.
+  unsigned available=0;const unsigned needed=NvsBudget::alternatingStoreEntries(PracticeHistory::IMAGE_BYTES);
+  const bool room=nvsAvailable(available) && available>=needed;
+  if(!room)Serial.printf("HISTORY_CHECK_SKIPPED reason=nvs_space available_entries=%u needed_entries=%u written=0\n",available,needed);
+  ok=ok && room;
   auto h=std::unique_ptr<PracticeHistory>(new(std::nothrow) PracticeHistory);
   auto store=std::unique_ptr<PracticeStore>(new(std::nothrow) PracticeStore);
   uint32_t maximum=0;unsigned writes=0;
@@ -943,8 +1063,8 @@ LOOP_HELPER static void checkStorage() {
     ok=ok && !scratch.isKey("history0") && !scratch.isKey("history1");
   }
   const bool resumed=acquisition.request(Action::CheckpointEnd);
-  Serial.printf("HISTORY_CHECK ok=%d writes=%u max_write_us=%lu scratch_clean=%d resumed=%d actual_records=%u\n",
-    ok,writes,(unsigned long)maximum,clean,resumed,practice.size());dirty=true;
+  Serial.printf("HISTORY_CHECK ok=%d writes=%u max_write_us=%lu scratch_clean=%d resumed=%d actual_records=%u nvs_available_entries=%u nvs_needed_entries=%u\n",
+    ok,writes,(unsigned long)maximum,clean,resumed,practice.size(),available,needed);dirty=true;
 }
 
 LOOP_HELPER static void checkMotionStorage() {
@@ -955,10 +1075,13 @@ LOOP_HELPER static void checkMotionStorage() {
   Preferences scratch;scratch.begin("ll-mot-qa",false);
   for(const char *key:{"ref0","ref1"})if(scratch.isKey(key))scratch.remove(key);
   const bool clean=!scratch.isKey("ref0") && !scratch.isKey("ref1");
+  unsigned available=0;const unsigned needed=NvsBudget::alternatingStoreEntries(LaunchMotion::IMAGE_BYTES);
+  const bool room=nvsAvailable(available) && available>=needed;
+  if(!room)Serial.printf("MOTION_CHECK_SKIPPED reason=nvs_space available_entries=%u needed_entries=%u written=0\n",available,needed);
   auto t=std::unique_ptr<LaunchMotion::Trace>(new(std::nothrow) LaunchMotion::Trace);
   auto restored=std::unique_ptr<LaunchMotion::Trace>(new(std::nothrow) LaunchMotion::Trace);
   auto store=std::unique_ptr<MotionStore>(new(std::nothrow) MotionStore);
-  bool ok=clean && t && restored && store && store->begin(*restored,"ll-mot-qa");
+  bool ok=clean && room && t && restored && store && store->begin(*restored,"ll-mot-qa");
   unsigned writes=0;uint32_t maximum=0;
   if(t)MotionUI::makeDemo(*t,true);
   for(unsigned i=1;ok && i<=16;++i) {
@@ -971,8 +1094,8 @@ LOOP_HELPER static void checkMotionStorage() {
   if(clean)for(const char *key:{"ref0","ref1"})if(scratch.isKey(key))cleaned=scratch.remove(key) && cleaned;
   cleaned=cleaned && !scratch.isKey("ref0") && !scratch.isKey("ref1");
   const bool resumed=acquisition.request(Action::CheckpointEnd);
-  Serial.printf("MOTION_CHECK ok=%d writes=%u bytes=%u max_write_us=%lu scratch_clean=%d resumed=%d actual_records=%u actual_ref=%lu\n",
-    ok,writes,unsigned(LaunchMotion::IMAGE_BYTES),(unsigned long)maximum,cleaned,resumed,practice.size(),(unsigned long)referenceMotion.number);
+  Serial.printf("MOTION_CHECK ok=%d writes=%u bytes=%u max_write_us=%lu scratch_clean=%d resumed=%d actual_records=%u actual_ref=%lu nvs_available_entries=%u nvs_needed_entries=%u\n",
+    ok,writes,unsigned(LaunchMotion::IMAGE_BYTES),(unsigned long)maximum,cleaned,resumed,practice.size(),(unsigned long)referenceMotion.number,available,needed);
   dirty=true;
 }
 
@@ -990,9 +1113,11 @@ void setup() {
     unsigned(LAUNCHLAB_CPU_MHZ),(unsigned long)getCpuFrequencyMhz(),(unsigned long)getApbFrequency(),!clockOk);
   auto cfg=M5.config();
   cfg.fallback_board=m5::board_t::board_M5StickS3;
-  cfg.internal_mic=cfg.internal_spk=cfg.internal_rtc=false;cfg.internal_imu=true;
+  // internal_spk only configures the speaker; it stays unpowered until a sound plays.
+  cfg.internal_mic=cfg.internal_rtc=false;cfg.internal_spk=cfg.internal_imu=true;
   cfg.external_imu=cfg.external_rtc=false;cfg.output_power=false;
   M5.begin(cfg);
+  soundPlayer.configure();
   M5.Ex_I2C.release();
   pm1WakeValid=M5.Power.M5pm1.readRegister(0x05,&pm1WakeFlags,1);
   M5.Power.M5pm1.clearWakeSource();
@@ -1050,13 +1175,16 @@ void setup() {
   const uint8_t savedBrightness=prefs.getUChar("bright_pct",40);
   if(savedBrightness>=10 && savedBrightness<=100 && savedBrightness%10==0)brightnessPercent=savedBrightness;
   else Serial.println("BRIGHTNESS_SETTING_NOTICE invalid_saved_value_using_40_pct");
-  if(!DisplayFlipSetting::load(prefs,displayFlipped))Serial.println("DISPLAY_SETTING_NOTICE invalid_record_retained_using_normal_orientation");
+  if(!DisplayFlipSetting::load(prefs,displayFlipped))Serial.println("DISPLAY_SETTING_NOTICE invalid_record_retained_using_flip_off_default");
   if(!appearanceStore.begin(appearance,"ll-appearance","cfg0","cfg1"))Serial.println("APPEARANCE_NOTICE invalid_record_retained_using_defaults");
   if(!bestStore.begin(personalBests,"ll-bests","best0","best1"))Serial.println("BEST_NOTICE invalid_record_retained_celebration_disabled");
   uint8_t pin=prefs.getUChar("ao_pin",1);
   if(pin<1 || pin>10)pin=1;
   extPower=prefs.getBool("ext5v",false);
   saveError=!practiceStore.begin(practice);
+  // Reclaim the orphaned RF calibration blob found in ll-practice; the history
+  // save it would otherwise crowd out matters far more. Boot only, before ADC.
+  if(practiceStore.hasOrphan())Serial.printf("NVS_RECLAIM key=ll-practice/%s removed=%d\n",PracticeStore::ORPHAN_KEY,practiceStore.removeOrphan());
   practice.newSession(); // Boot starts a fresh metric/session boundary; old scalar history stays intact.
   referenceError=!motionStore.begin(referenceMotion);
   if(const auto *last=practice.recent()) {
@@ -1064,8 +1192,13 @@ void setup() {
     if(referenceMotion.valid() && referenceMotion.fused && referenceMotion.number==last->number)latestMotion=referenceMotion;
   }
   M5.Power.setExtOutput(extPower);
-  M5.Display.setRotation(displayFlipped?2:0);M5.Display.setBrightness(backlightValue());M5.Display.setTextSize(1);
-  screen.setColorDepth(16);screenReady=screen.createSprite(M5.Display.width(),M5.Display.height())!=nullptr;
+  M5.Display.setRotation(DisplayOrientation::rotation(displayFlipped));M5.Display.setBrightness(backlightValue());M5.Display.setTextSize(1);
+  // Internal RAM first: at 80 MHz a PSRAM canvas made a recap frame about 8 ms
+  // slower to compose and push. M5Canvas defaults to PSRAM, which stays the
+  // fallback if 64.8 KB of internal RAM is not free.
+  screen.setColorDepth(16);screen.setPsram(false);
+  screenReady=screen.createSprite(M5.Display.width(),M5.Display.height())!=nullptr;
+  if(!screenReady){screen.setPsram(true);screenReady=screen.createSprite(M5.Display.width(),M5.Display.height())!=nullptr;}
   if(!screenReady)Serial.println("DISPLAY_NOTICE direct_draw_fallback");
   if(saveError)Serial.println("HISTORY_ERROR storage unavailable; existing bytes retained");
   M5.BtnA.setHoldThresh(1000);M5.BtnB.setHoldThresh(1000);
@@ -1077,22 +1210,76 @@ void setup() {
   powerLogTick=lastPowerSample=millis();
   Serial.printf("POWER_WAKE esp_cause=%d pm1_flags_valid=%d pm1_flags=0x%02x pending_standby=%d\n",int(wakeCause),pm1WakeValid,pm1WakeFlags,wakingFromStandby);
   inactivity.touch(millis());
-  Serial.printf("BOOT LaunchLab Mini %s ppr=1 min_rpm=1000 min_mark=%.0f edge_fraction=%.2f sample_hz=50000 task_core=0\n",VERSION,
+  Serial.printf("BOOT %s ppr=1 min_rpm=1000 min_mark=%.0f edge_fraction=%.2f sample_hz=50000 task_core=0\n",VERSION,
     StickS3SensorProfile::minMark(sensorProfile),StickS3SensorProfile::EDGE_SWING_FRACTION);
   Serial.printf("RPM_SETTING_BOOT selected=%s default=three_turn_peak legacy_history=retained_metric_not_encoded\n",RpmEstimator::name(rpmEstimator));
-  Serial.println("READY commands: p status, P power log, a/c tap A, h tap B, o hold A, b hold B, d diagnostics, n new session, u history export, K backup export, R backup restore, e motion export, q synthetic recap, t synthetic history, y/z storage check, v screen, w recorder export, x ext5V, g<N> GPIO, s stress, j UI stall");
+  Serial.println("READY commands: p status, P power log, a/c tap A, h tap B, o hold A, b hold B, d diagnostics, n new session, u history export, K backup export, R backup restore, e motion export, q synthetic recap, E<0-4> best effect preview, t synthetic history, y/z storage check, v screen, w recorder export, x ext5V, g<N> GPIO, s stress, j UI stall");
+}
+
+// A pull, leaving the recap or closing the Sound editor silences at once;
+// the codec powers down once silent and no pull is being measured.
+LOOP_HELPER static void tickSound(const Snapshot &s) {
+  const bool measuring=s.phase==AnalogTachometer::Phase::Launch;
+  const bool celebrating=bestEffect.badge(),editing=controls.page==Controls::Page::Edit && (controls.setting==6 || controls.setting==7);
+  if(editorEffect.badge() && !(controls.page==Controls::Page::Edit && controls.setting==6)){editorEffect.clear();dirty=true;}
+  if(measuring || (celebrationSound && !celebrating) || (soundPreview && !editing)) {
+    soundPlayer.stop();celebrationSound=soundPreview=false;
+  }
+  if(soundRequest.active && (measuring || (soundRequest.celebration?!celebrating || bestEffect.elapsed(millis())>SOUND_LATE_MS:!editing)))
+    soundRequest.active=false;
+  if(!soundPlayer.playing())celebrationSound=soundPreview=false;
+  soundPlayer.tick(measuring || motionPending);
+  if(measuring || motionPending)return;
+  // Render a slice per idle pass (1/64 s of audio, a few ms): a waiting
+  // request first, else the chosen effect, ready before the next best or the
+  // first preview while the Sound editor is open.
+  constexpr size_t SLICE=BestEffectSound::RATE/64;
+  if(soundRequest.active) {
+    if(soundPlayer.prepare(soundRequest.effect,SLICE))requestSound(soundRequest.effect,soundRequest.level,soundRequest.celebration);
+    return;
+  }
+  const bool wanted=appearance.sound!=Appearance::Sound::Off || editing;
+  if(wanted && !soundPlayer.prepared(soundTarget()))soundPlayer.prepare(soundTarget(),SLICE);
+}
+
+// USB only: replay the last recap with a celebration to check an effect on the
+// device. Bests, history and settings are unchanged; max_effect_us and
+// max_draw_us restart so PERF reports this preview's slowest pass and frame.
+LOOP_HELPER static void previewBestEffect(Appearance::Effect effect) {
+  if(tournamentMode || motionPending || !latestMotion.number){Serial.println("EFFECT_PREVIEW_ERROR no_recap");return;}
+  if(controls.page==Controls::Page::Edit)cancelSettingEdit();
+  controls.page=Controls::Page::Main;syncNavigation();
+  historyPage=diagnostics=motionDemo=demo=false;
+  // A preview may pick an effect other than the saved one: render its sound
+  // here, before the recap and its timing start, rather than miss its cue.
+  uint32_t renderUs=0;
+  if(appearance.sound!=Appearance::Sound::Off && !soundPlayer.prepared(effect)) {
+    soundPlayer.stop();const int64_t started=esp_timer_get_time();
+    soundPlayer.prepare(effect);renderUs=uint32_t(esp_timer_get_time()-started);
+  }
+  launchFeedback.show(millis());
+  bestEffect.queue(true,latestMotion.number,effect);bestEffect.captured(latestMotion.number);
+  maxEffectUs=maxDrawUs=0;dirty=true;
+  Serial.printf("EFFECT_PREVIEW effect=%s duration_ms=%lu launch=%lu sound_render_us=%lu bests_unchanged=1\n",Appearance::label(effect),
+    (unsigned long)Appearance::duration(effect),(unsigned long)latestMotion.number,(unsigned long)renderUs);
 }
 
 // USB commands, bounded per pass. A real call: its inlined handlers once made
 // up most of loop()'s frame.
 LOOP_HELPER static void pollCommands(const Snapshot &s) {
-  static char command[8]={};static uint8_t used=0;
+  static char command[8]={};static uint8_t used=0;static bool effectPreview=false;
   if(restoreRx.active())pollRestore(s);
   // Bound incoming work; an unending USB stream cannot starve button/draw work.
   for(unsigned n=0;n<32 && !restoreRx.active() && Serial.available();++n) {
     const char c=Serial.read();
     // Status polling is observational; other explicit USB actions count as use.
     if(c!='p' && c!='P' && c!='\n' && c!='\r')inactivity.touch(millis());
+    if(effectPreview) {
+      // E<digit> previews that effect; E<newline> the saved one.
+      effectPreview=false;const unsigned digit=unsigned(c-'0');
+      if(Appearance::drawn(digit)){previewBestEffect(Appearance::Effect(digit));continue;}
+      previewBestEffect(celebrationEffect());if(c=='\n' || c=='\r')continue;
+    }
     if(used || c=='g') {
       if(c=='\n' || c=='\r') {
         char *end=nullptr;const long pin=strtol(command+1,&end,10);
@@ -1126,6 +1313,7 @@ LOOP_HELPER static void pollCommands(const Snapshot &s) {
     else if(c=='h')toggleHistory();
     else if(c=='c')nextView();
     else if(c=='e')exportMotion();
+    else if(c=='E')effectPreview=true;
     else if(c=='q') {
       if(tournamentMode){Serial.println("RECAP_DEMO_ERROR leave_tournament_first");continue;}
       if(controls.page==Controls::Page::Edit)cancelSettingEdit();
@@ -1201,16 +1389,16 @@ void loop() {
   pollBattery(now,s);
   tickPowerLog(now,s);
   pollUsbAwake(now,s);
+  tickSound(s);
   if(restorePreview)previewSetting();
   autoPowerOff(now,s);
-  pollSettingsEffectPreview(now,s);
   if(newSessionAt && now-newSessionAt>=1500){newSessionAt=0;dirty=true;}
   if(stress && now-lastDraw>=50)dirty=true;
   if((M5.BtnA.isPressed() || M5.BtnB.isPressed()) && now-lastDraw>=50)dirty=true;
   if(tournamentHintUntil && int32_t(now-tournamentHintUntil)>=0){tournamentHintUntil=0;dirty=true;}
   if(diagnostics && now-lastDraw>=500)dirty=true;
   if(historyPage && historyView==PracticeUI::View::Battery && now-lastDraw>=1000)dirty=true;
-  const bool effectMoving=bestEffect.moving(now,appearance.effect);
+  const bool effectMoving=bestEffect.moving(now) || editorEffect.moving(now);
   if((effectMoving || effectWasMoving) && now-lastDraw>=50)dirty=true;
   // One final clean frame removes the decoration; the NEW BEST label stays.
   if(dirty && (stress || s.phase!=AnalogTachometer::Phase::Launch))effectWasMoving=effectMoving;

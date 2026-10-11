@@ -32,6 +32,17 @@ def split_args(text):
     return args + [text[start:]]
 
 
+def function(text, signature):
+    start = text.index(signature)
+    opening = text.index("{", start)
+    depth = 0
+    for cursor in range(opening, len(text)):
+        depth += (text[cursor] == "{") - (text[cursor] == "}")
+        if depth == 0:
+            return text[start:cursor + 1]
+    raise RuntimeError("Unbalanced firmware function")
+
+
 def main():
     root = Path(__file__).resolve().parents[2]
     source = (root / "firmware/LaunchLabMini/LaunchLabMini.ino").read_text()
@@ -54,7 +65,9 @@ def main():
     condition = conditional[opening + 1:balanced(conditional, opening)]
     frame_time = re.search(r"const uint32_t replayFrameElapsed=[^;]+;", source)[0]
     header = (
-        "static uint32_t drawActualFeedback(lgfx::LGFXBase &view){" + frame_time + call + ";return replayFrameElapsed;}\n"
+        function(source, "static bool visibleDisplayFlipped()") + "\n"
+        + function(source, "static void drawLiveLevel(") + "\n"
+        + "static uint32_t drawActualFeedback(lgfx::LGFXBase &view){" + frame_time + call + ";return replayFrameElapsed;}\n"
         "static void drawExpectedFeedback(lgfx::LGFXBase &view,float expectedProgress){" + expected_call + ";}\n"
         "static void finishActualFeedbackFrame(uint32_t replayFrameElapsed){" + hook + ";}\n"
         "static bool actualNeedsReplayFrame(uint32_t now,uint32_t lastDraw){return " + condition + ";}\n"

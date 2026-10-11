@@ -17,13 +17,15 @@ int main() {
     L tilted;tilted.feed(sign*0.5f,0,std::sqrt(0.75f),1000);
     auto r=tilted.reading(1000);assert(r.valid() && near(r.degrees,30));
     assert(near(r.right,sign) && near(r.down,0));
-    auto flipped=L::forDisplay(r,true);
-    assert(flipped.valid() && near(flipped.degrees,30) && near(flipped.right,-sign) && near(flipped.down,0));
+    auto flipOff=L::forDisplay(r,false),flipOn=L::forDisplay(r,true);
+    assert(flipOff.valid() && near(flipOff.degrees,30) && near(flipOff.right,-sign) && near(flipOff.down,0));
+    assert(flipOn.valid() && near(flipOn.degrees,30) && near(flipOn.right,sign) && near(flipOn.down,0));
     assert(near(r.right,sign)); // Drawing does not mutate recorded/native data.
     L other;other.feed(0,sign*0.5f,std::sqrt(0.75f),1000);
     r=other.reading(1000);assert(near(r.right,0) && near(r.down,-sign));
-    flipped=L::forDisplay(r,true);
-    assert(flipped.valid() && near(flipped.degrees,30) && near(flipped.right,0) && near(flipped.down,sign));
+    flipOff=L::forDisplay(r,false);flipOn=L::forDisplay(r,true);
+    assert(flipOff.valid() && near(flipOff.degrees,30) && near(flipOff.right,0) && near(flipOff.down,sign));
+    assert(flipOn.valid() && near(flipOn.degrees,30) && near(flipOn.right,0) && near(flipOn.down,-sign));
   }
   L diagonal;diagonal.feed(0.5f,0.5f,std::sqrt(0.5f),1);
   auto r=diagonal.reading(1);assert(near(r.degrees,45));

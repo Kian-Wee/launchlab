@@ -25,5 +25,19 @@ int main() {
   const auto damaged=Preferences::data;
   PracticeHistory empty;PracticeStore broken;assert(!broken.begin(empty));
   assert(Preferences::data==damaged && !broken.ready());
-  std::cout<<"PASS: alternating snapshots, exact save/readback, reboot selection, damaged newest fallback, failed write/read retention and no destructive corruption recovery\n";
+  // The orphaned RF calibration blob is removed alone; history slots and other
+  // namespaces stay byte-identical, and a store without it is left alone.
+  Preferences::data.clear();
+  PracticeHistory kept;PracticeStore owner;assert(owner.begin(kept));
+  for(unsigned i=1;i<=3;++i){kept.accept(i,true,5000+i,i*1000);assert(owner.save(kept));}
+  Preferences::data["ll-practicecal_data"]=std::vector<unsigned char>(1904,0xa5);
+  Preferences::data["ll-powerlog"]={1,2,3};Preferences::data["ll-motioncal_data"]={4};
+  auto withoutOrphan=Preferences::data;withoutOrphan.erase("ll-practicecal_data");
+  PracticeHistory reopened;PracticeStore reclaim;assert(reclaim.begin(reopened) && reopened.size()==3);
+  assert(reclaim.hasOrphan() && reclaim.removeOrphan() && !reclaim.hasOrphan());
+  assert(Preferences::data==withoutOrphan);
+  assert(!reclaim.removeOrphan() && Preferences::data==withoutOrphan);
+  PracticeHistory after;PracticeStore again;assert(again.begin(after) && after.size()==3 && after.generation()==kept.generation());
+  PracticeStore closed;assert(!closed.hasOrphan() && !closed.removeOrphan());
+  std::cout<<"PASS: alternating snapshots, exact save/readback, reboot selection, damaged newest fallback, failed write/read retention and no destructive corruption recovery; orphaned calibration blob removed alone\n";
 }
