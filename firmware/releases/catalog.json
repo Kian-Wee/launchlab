@@ -728,5 +728,14 @@
       "nvs_bytes": "0x5000",
       "app0_bytes": "0x330000"
     }
+  },
+  {
+    "release": "0.12.2-sticks3-recovery",
+    "runtime_version": "0.12.2-sticks3-flip-colors",
+    "board": "M5StickS3 K150",
+    "status": "host-validated-production-release-authorized-with-related-device-evidence-and-documented-limits",
+    "binary": "LaunchLabMini.ino.bin",
+    "binary_bytes": 808144,
+    "sha256": "9548c322ae1f7383641e62ec5b81f7a2f54777c05034f8c5aac47a40b4f25b49"
   }
 ]

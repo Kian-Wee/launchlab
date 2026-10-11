@@ -1,8 +1,8 @@
 # LaunchLab Mini for M5StickS3
 
-Current revision: **0.12.1-sticks3-flip-colors** for **M5StickS3 K150 (ESP32-S3, 8 MB flash / 8 MB OPI PSRAM)**.
+Current revision: **0.12.2-sticks3-flip-colors** for **M5StickS3 K150 (ESP32-S3, 8 MB flash / 8 MB OPI PSRAM)**.
 One application supports SparkFun QRE1113 analog and TCRT5000 via the saved Sensor profile setting.
-See [source and build context](../../docs/FIRMWARE_0.12.1.md) and [exact release identity and acceptance](../releases/0.12.1-sticks3-pulse-guard/README.md).
+See [source and build context](../../docs/FIRMWARE_0.12.2.md) and [exact release identity and acceptance](../releases/0.12.2-sticks3-recovery/README.md).
 
 Settings offers ten saved accent themes, Best effect (Random, five effects or Off) and Sound (Off, Low or High).
 The Best effect editor previews the draft once; B cycles, A applies and hold B cancels.
@@ -16,6 +16,11 @@ Flip Off maps to mounted rotation 2 and Flip On to native rotation 0; saved bool
 The single-turn peak estimator discounts an unconfirmed extra optical mark when the next intervals return to the preceding revolution cadence.
 Confirmed faster motion and valid final-turn peaks remain supported; launch confirmation and optical thresholds retain their existing behavior.
 Indistinguishable transient motion and terminal split marks remain limitations; see the release notes.
+
+The learned swing-ring index resets with its count after discontinuity and checkpoint recovery.
+Single Turn startup retains a qualified completed predecessor while the fastest latest arrival passes its existing delayed check.
+The owner identified a soldering issue in the reported intermittent behavior; these software changes have independent generated regression evidence.
+The exact 0.12.2 binary has not been installed or read back; related diagnostic-build device evidence is described in the release notes.
 
 ## Wiring
 
@@ -65,7 +70,7 @@ Measured launches, button use and interactive USB commands refresh the inactivit
 
 Run `bash scripts/build-firmware.sh` from the repo root with Arduino CLI installed. Dependencies: ESP32 3.3.0, M5Unified 0.2.23, M5GFX 0.2.30. Host/toolchain differences can change rebuilt bytes; use the frozen archive for exact binary restoration.
 
-Run `bash scripts/test-firmware.sh`: 28 sanitizer-enabled native suites and nine production harnesses, including controls, display flip, sensor-profile storage, appearance and device backup, with a synthetic playback fixture instead of personal practice records. These software checks do not establish physical battery, recovery or calibration acceptance.
+Run `bash scripts/test-firmware.sh`: 31 sanitizer-enabled native suites and nine production harnesses, including controls, display flip, sensor-profile storage, appearance and device backup, with a synthetic playback fixture instead of personal practice records. These software checks do not establish physical battery, recovery or calibration acceptance.
 
 The frozen 0.11.1 application was installed app-only on the owner's M5StickS3 K150: no restarts in a 120 s soak, all 128 history records kept, a backup and restore round trip identical, and the screen, themes and pulls confirmed. Earlier, the 0.10.21 application was installed with complete native readback verification, with NVS, bootloader and partitions preserved. Actual device frames of the Flip and Sensor editors were checked. The user reports the installed firmware working on their device. Earlier revisions in this line had three-pull QRE1113 checks (0.10.14) and a six-pull TCRT5000 check (0.10.17). This is qualitative device acceptance, not long-session or absolute RPM/angle calibration.
 

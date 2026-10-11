@@ -1,0 +1,13 @@
+LaunchLab Mini uses separate licenses for software and hardware.
+
+Original LaunchLab firmware, website and utility scripts: MIT (see LICENSE-MIT).
+The vendored VQF implementation retains its upstream MIT license at
+firmware/LaunchLabMini/src/vqf/LICENSE.
+
+CAD, STL, STEP, 3MF and hardware print packages derive in part from
+BP Gear Port Connector by Migbello, Thingiverse 6856080, supplied under
+Creative Commons Attribution Share Alike, version unspecified in the source.
+Original and derivative notices are preserved in hardware/*/LICENSE.txt and
+hardware/*/references/. Those files are not covered by LICENSE-MIT.
+
+See THIRD_PARTY_NOTICES.md for dependencies and attribution.

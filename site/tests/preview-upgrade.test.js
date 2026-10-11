@@ -51,9 +51,10 @@ test('post-write application corruption is reported as a verification failure',a
 test('verified release can deliberately return to preserved 0.11.1 application',async()=>{
   const l=fake({app:images[3].data});assert.equal((await flashVerified({...opts(l),catalog:recovery,images:recoveryImages,mode:'recovery',recoveryConfirmed:true})).status,'verified');assert.deepEqual(l.writes[0].fileArray.map(f=>f.address),[0x10000]);assert.equal(l.writes[0].eraseAll,false);
 });
-test('restored 0.11.2 default recognizes installed 0.12.1 and blocks an ordinary downgrade',async()=>{
+test('0.12.2 default upgrades preserved 0.12.1 through an ordinary app-only update',async()=>{
   const l=fake({app:images[3].data});
   assert.equal((await inspectInstalledApplication(l,recommendedCatalog)).application.version,'0.12.1');
-  await assert.rejects(flashVerified({...recommendedOpts(l),catalog:recommendedCatalog,images:recommendedImages}),/Downgrade blocked/);
-  assert.equal(l.writes.length,0);
+  assert.equal((await flashVerified({...recommendedOpts(l),catalog:recommendedCatalog,images:recommendedImages})).status,'verified');
+  assert.deepEqual(l.writes[0].fileArray.map(f=>f.address),[0x10000]);
+  assert.equal(l.writes[0].eraseAll,false);
 });

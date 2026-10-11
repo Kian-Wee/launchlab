@@ -36,7 +36,7 @@
 // overflowed on the first status print. Keep heavy or rarely used helpers as
 // real calls so each one uses stack only while it runs.
 #define LOOP_HELPER __attribute__((noinline))
-static constexpr char VERSION[] = "0.12.1-sticks3-flip-colors";
+static constexpr char VERSION[] = "0.12.2-sticks3-flip-colors";
 static_assert(sizeof(VERSION)<=DeviceBackup::RUNTIME_BYTES,"Runtime must fit the USB backup header");
 #ifndef LAUNCHLAB_CPU_MHZ
 #define LAUNCHLAB_CPU_MHZ 80

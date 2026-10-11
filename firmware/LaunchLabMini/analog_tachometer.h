@@ -80,7 +80,7 @@ public:
     resultValid=false;resultRpm=peakRpm=sustainedPeakRpm=singlePeakRpm=sustainedPeakAmplitude=singlePeakAmplitude=0;resultRevision++;ended=End::DataLoss;
     phase=enabled?Phase::Settling:Phase::Paused;quietSince=nowUs;
     clearSequence();rise=fall=0;initialized=false;sum=0;count=index=group=0;
-    diffCount=diffIndex=0;clearMotion();railSince=0;signalFault=false;swingCount=0;
+    diffCount=diffIndex=0;clearMotion();railSince=0;signalFault=false;swingCount=swingNext=0;
   }
   void feed(uint16_t raw) {
     nowUs+=20;
@@ -397,8 +397,15 @@ private:
     if(singleTurnPeak || trackSingleTurnPeak) {
       if(starting) {
         const unsigned fastest=unsigned(bounds.first-periods);
-        if(fastest==(nPeriods-1)%3)offerSingle(60000000.0f/periods[fastest],amplitudes[fastest],period,0);
-        else singlePeak(60000000.0f/periods[fastest],amplitudes[fastest]);
+        if(fastest==(nPeriods-1)%3) {
+          // The other two qualified periods have complete arrival marks.
+          // Keep their fastest peak while the latest arrival is checked.
+          unsigned completed=(fastest+1)%3;
+          const unsigned other=(fastest+2)%3;
+          if(periods[other]<periods[completed])completed=other;
+          singlePeak(60000000.0f/periods[completed],amplitudes[completed]);
+          offerSingle(60000000.0f/periods[fastest],amplitudes[fastest],period,0);
+        } else singlePeak(60000000.0f/periods[fastest],amplitudes[fastest]);
       } else if(adjacent && previousAmplitude>=minMark &&
         fabsf(previousDuty-validatedDuty)<=0.20f && fabsf(duty-validatedDuty)<=0.20f &&
         previousAmplitude<=validatedAmplitude*2.5f && validatedAmplitude<=previousAmplitude*2.5f &&

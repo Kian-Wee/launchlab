@@ -419,7 +419,8 @@
       "sha256": "25eb22f75833dc4ce353a3c69aca1bfd3330ed0209396b4c9020d29cf831e7e5",
       "md5": "191ed143aaddd916727891ca9ec621f4",
       "elfSha256": "9c15e49a7f7e5c91f804afad994652fb20d4f32471dbfba5e1919605fb3a47e5",
-      "sensor": "qre1113"
+      "sensor": "qre1113",
+      "buildId": "0.12.1-sticks3-flip-colors"
     },
     {
       "version": "0.12.1",
@@ -428,7 +429,27 @@
       "sha256": "a13d590f11c3c8e8f8ab84a0b8ebd8d69761cf1046e2a0f9fd1d9c162d01ad41",
       "md5": "6a586850ae02062177ff82b7c7fba911",
       "elfSha256": "d924656403b9883250de5d0a95463a2c72df9781f9084f5af76831e416943c2e",
+      "sensor": "qre1113",
+      "buildId": "0.12.1-sticks3-pulse-guard-device-verified"
+    },
+    {
+      "version": "0.12.2",
+      "runtime": "0.12.2-sticks3-flip-colors",
+      "size": 808144,
+      "sha256": "9548c322ae1f7383641e62ec5b81f7a2f54777c05034f8c5aac47a40b4f25b49",
+      "md5": "cabacde020367d91298de0b81ed2070e",
+      "elfSha256": "a536f2451554abd682a7f841880d5f24f333b310008a0e988785cead39557e51",
       "sensor": "qre1113"
+    },
+    {
+      "version": "0.12.1",
+      "runtime": "0.12.1-sticks3-flip-colors",
+      "size": 809680,
+      "sha256": "80c9bb99f6c5ce22313f38f75b3ed64bd37d95abe1a7ec39a9e679cf1448f3b6",
+      "md5": "95974ecdbc420a40d1de5a59ca451e5e",
+      "elfSha256": "990a1e38f05037cf9f1bd826cbec63a948e15cbefc58ab8778c9ba71df34ab54",
+      "sensor": "qre1113",
+      "buildId": "0.12.1-sticks3-private-recovery-diagnostic"
     }
   ],
   "profiles": [

@@ -18,12 +18,15 @@ template<class T>static void square(T &d,unsigned period,unsigned count,int amp=
 }
 static AnalogTachometer ready(){AnalogTachometer d;StickS3SensorProfile::configure(d);feed(d,1200000,140);return d;}
 static Original::AnalogTachometer oldReady(){Original::AnalogTachometer d;d.minMark=80;d.edgeSwingFraction=.7f;feed(d,1200000,140);return d;}
-// Feed the exact before/after production detectors together. The correction
-// may change only the alternative peak and its diagnostics, never acquisition
-// confirmation, three-turn timing, launch publication or rearm behavior.
+// Feed the exact before/after production detectors together. Without a reset,
+// the pulse guard may change only the alternative peak and its diagnostics.
+// The two reset-recovery fixtures retain samplewise state/publication/rearm
+// equality and use their generated 10-ms timing oracle for recovered RPM,
+// because normalizing the swing-ring index corrects the first-window timing.
 struct OpticalTrace {
   AnalogTachometer current;
   BeforeGuard::AnalogTachometer before;
+  float recoveryOracleRpm=0;
   OpticalTrace() {
     StickS3SensorProfile::configure(current);
     before.minMark=80;before.edgeSwingFraction=.7f;
@@ -33,8 +36,22 @@ struct OpticalTrace {
   void boundaries()const {
     assert(int(current.phase)==int(before.phase) && current.resultValid==before.resultValid);
     assert(current.launches==before.launches && current.resultRevision==before.resultRevision);
-    assert(current.peakRpm==before.peakRpm && current.resultRpm==before.resultRpm);
-    assert(current.sustainedPeakRpm==before.sustainedPeakRpm);
+    if(recoveryOracleRpm>0) {
+      // Reset now normalizes the swing-ring index. The old source's first
+      // recovered windows may differ before converging to generated 6000.
+      // Keep samplewise state/boundary equality and use the generated 10-ms
+      // waveform oracle, allowing one 100-us extraction-grid step per period.
+      const float periodUs=60000000.0f/recoveryOracleRpm;
+      const float rpmLow=60000000.0f/(periodUs+100),rpmHigh=60000000.0f/(periodUs-100);
+      const auto generatedRpm=[&](float rpm){return rpm>=rpmLow-0.01f && rpm<=rpmHigh+0.01f;};
+      if(current.peakRpm>0)assert(generatedRpm(current.peakRpm));
+      if(current.resultValid)assert(generatedRpm(current.resultRpm));
+      if(current.sustainedPeakRpm>0)assert(generatedRpm(current.sustainedPeakRpm));
+      if(current.singlePeakRpm>0)assert(generatedRpm(current.singlePeakRpm));
+    } else {
+      assert(current.peakRpm==before.peakRpm && current.resultRpm==before.resultRpm);
+      assert(current.sustainedPeakRpm==before.sustainedPeakRpm);
+    }
     assert(current.burstStartUs==before.burstStartUs && current.burstEndUs==before.burstEndUs);
     assert(current.rearmMs()==before.rearmMs() && current.rearmExtensions==before.rearmExtensions);
   }
@@ -156,11 +173,11 @@ int main() {
   arrival.level(2000,440);arrival.level(2000,140);arrival.turns(10000,8);arrival.finish(240);
   assert(std::fabs(arrival.current.singlePeakRpm-6000)<3);
   OpticalTrace reset;reset.turns(10000,12);reset.turns(4000,1);reset.level(1000,240);
-  reset.loss();assert(reset.current.singlePeakRpm==0 && !reset.current.resultValid);
+  reset.recoveryOracleRpm=6000;reset.loss();assert(reset.current.singlePeakRpm==0 && !reset.current.resultValid);
   reset.level(1300000,140);reset.turns(10000,12);reset.finish(240);
   assert(std::fabs(reset.current.singlePeakRpm-6000)<3);
   OpticalTrace paused;paused.turns(10000,12);paused.turns(4000,1);paused.level(1000,240);
-  paused.current.setEnabled(false);paused.before.setEnabled(false);paused.boundaries();
+  paused.recoveryOracleRpm=6000;paused.current.setEnabled(false);paused.before.setEnabled(false);paused.boundaries();
   paused.level(1300000,140);paused.current.setEnabled(true);paused.before.setEnabled(true);
   paused.boundaries();paused.level(1300000,140);paused.turns(10000,12);paused.finish(240);
   assert(std::fabs(paused.current.singlePeakRpm-6000)<3);

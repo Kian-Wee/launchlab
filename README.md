@@ -1,11 +1,11 @@
 # LaunchLab Mini for Beyblade X
 
-**Firmware 0.12.1 is under investigation.**
-The owner reported unusually high readings and intermittent missed pulls after its initial scoped checks.
-It is removed from the web updater’s selections and marked as a GitHub prerelease; the source, tag and release files are preserved.
-The updater defaults to the previous **0.11.2** release, which is not a verified fix for these symptoms.
-Ordinary Update blocks downgrades; no device is forced to roll back.
-See [release notes](firmware/releases/0.12.1-sticks3-pulse-guard/README.md) and [source build context](docs/FIRMWARE_0.12.1.md).
+**Firmware 0.12.2 is the recommended production release.**
+It includes independently tested swing-ring recovery and completed startup Single Turn peak corrections.
+The owner identified a soldering issue in the reported intermittent behavior.
+The exact 0.12.2 application passed software and target-build checks; device evidence is from the related installed diagnostic build, not an exact 0.12.2 flash/readback.
+The withdrawn 0.12.1 source and assets remain preserved.
+See [release notes](firmware/releases/0.12.2-sticks3-recovery/README.md) and [source build context](docs/FIRMWARE_0.12.2.md).
 
 **A removable launch-practice meter for Beyblade X string launchers.** LaunchLab Mini uses an optical sensor to measure the launcher's shaft speed, then shows your peak RPM, launch history, and a replay of the device's tilt and rotation on an M5StickS3 screen. Use it to compare pulls, track consistency across practice sessions, and try to repeat a chosen launch.
 
@@ -60,7 +60,7 @@ Wire **AO/OUT → G1 / GPIO1**, **VCC → 3V3 / 3V3_L2**, **GND → GND**. DO is
 ![LaunchLab Mini M5StickS3 mount, rendered from the published CAD](site/public/images/m5-mount.png)
 
 
-The updater defaults to the previous **0.11.2** release while 0.12.1 is under investigation.
+The updater defaults to **0.12.2** for both saved sensor profiles; the withdrawn 0.12.1 is not offered in its version list.
 It checks the complete known installed application before an app-only update, blocks downgrades and unknown/incomplete images, and skips writing an identical version.
 **Repair / rollback** requires an explicit target/backup confirmation; both app-only paths require the matching partition layout and boot selection.
 All modes check the detected ESP32-S3 chip and 8 MB flash capacity.
@@ -68,8 +68,8 @@ The previous 0.11.2, 0.11.1, 0.10.22, 0.10.21, 0.10.14, 0.10.11, 0.10.7 and 0.10
 Physical browser transfer, four-image installation of this revision, stock recovery and rollback remain unverified.
 [Update details](docs/UPDATER.md) · [Recovery and vendor reinstall](docs/RECOVERY.md).
 
-Current source: **0.12.1, under investigation** (QRE1113 or TCRT5000 via Sensor profile).
-Updater default: previous **0.11.2**, without a symptom-fix claim.
+Current source: **0.12.2 production** (QRE1113 or TCRT5000 via Sensor profile).
+Updater default: **0.12.2**.
 Old TCRT firmware: **0.2.0**.
 Preferred separate M5 carrier: **v0.68**; latest TCRT mount: **v0.43**.
 The original QRE **v0.40** complete plate is still available.
@@ -79,7 +79,7 @@ Firmware, M5 carrier and sensor-mount versions are independent.
 
 ## What it does
 
-The preserved source revision is **0.12.1, under investigation**, running at 80 MHz with unchanged 50 kS/s optical sampling.
+The current source revision is **0.12.2**, running at 80 MHz with unchanged 50 kS/s optical sampling.
 It offers ten saved accent themes, five personal-best recap effects with Random/Off, optional Off/Low/High sound and USB backup/restore (`K`/`R`), and its build fails if any stack frame exceeds its budget.
 A saved Sensor profile selects QRE / Standard (80-count mark floor) or TCRT5000 (60-count floor).
 Controls are simpler: A opens or applies, B advances, hold B goes back or cancels.
@@ -257,25 +257,24 @@ npm run build
 `python3 scripts/verify-artifacts.py` verifies published checksums and 3MF ZIP integrity. GitHub Actions runs the native tests, updater tests and artifact checks before deploying Pages from `main`.
 
 Frozen M5 firmware versions are in [firmware/releases](firmware/releases/catalog.json), including the working 0.3.0 QRE baseline and the separate 0.2.0 old TCRT5000 variant.
-The web updater offers the previous 0.11.2 shared-profile application and preserves earlier selections; 0.12.1 remains archived under investigation.
+The web updater recommends the 0.12.2 shared-profile application and preserves earlier selections; withdrawn 0.12.1 remains archived.
 Historical source snapshots retain their original layouts and notes; use each release's source rather than mixing headers across versions.
 Device backups, personal practice exports and factory flash dumps are excluded.
 
 ## Validation scope
 
-The current firmware passed 28 native suites and nine production harnesses.
-The private optical corpus contains 12 recordings across 28 configurations: 18 confirmed configurations passed twice, while ten remain diagnostic.
-The exact application was installed with complete readback and backup retention, and initial owner feedback during the early-pull interaction was positive.
-The owner later reported unusually high readings and intermittent missed pulls; the earlier checks do not establish resolution of those symptoms.
-Independent absolute RPM calibration, printed fit/strength and physical browser flashing remain outside these checks.
+The current firmware passed 31 sanitizer-enabled native suites, nine public production harnesses, pinned target compilation and stack checks.
+The same-source private optical checks retain 18 confirmed configurations and 12 diagnostic-only configurations.
+Both corrections were exercised in the related installed diagnostic build, with complete application readback, backup retention and matching metric/history/UI registrations.
+The exact production 0.12.2 application has not been flashed or read back.
+The owner identified a soldering issue in the intermittent field behavior; that physical report is separate from the generated evidence for the software corrections.
+Independent absolute RPM calibration, printed fit/strength, first install, physical browser flashing, physical personal-best/Random sequencing and endurance remain outside these checks.
 
 RPM measures launcher-shaft revolutions, not direct Beyblade release RPM. Tilt replay has no measured travel distance or compass heading. Digital CAD/slicing checks establish file consistency, not printed fit or safe launch-load retention.
 
 Software: MIT with upstream component licenses. Hardware: preserved Creative Commons Attribution Share Alike notices. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Firmware 0.12.1 adds an extra-pulse guard, ten accent themes, the mounted Flip mapping and a clearer main screen while retaining five personal-best effects and optional sound.
-The exact application passed app-only installation, full readback and complete backup retention.
-Initial owner feedback during pulls while a preceding result was showing was positive.
-The later high-reading and missed-pull report is the current reliability status; 0.12.1 is under investigation.
-Physical palette/Flip/reset and main-screen checks were carried from earlier variants with identical UI source; first-install, browser transfer and rollback remain outside these checks.
-[Release evidence](firmware/releases/0.12.1-sticks3-pulse-guard/README.md).
+Firmware 0.12.2 retains the extra-mark guard, ten accent themes, mounted Flip mapping, expanded main screen, five personal-best effects and optional sound.
+It resets the learned swing ring consistently and retains a qualified completed startup peak while the latest fastest arrival is checked.
+Profile thresholds, paired launch boundaries, acquisition and persistent formats remain unchanged.
+[Release evidence](firmware/releases/0.12.2-sticks3-recovery/README.md).
