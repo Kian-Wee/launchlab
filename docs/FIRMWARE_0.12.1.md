@@ -2,7 +2,9 @@
 
 The checked-in production source matches the exact `0.12.1-sticks3-flip-colors` application.
 Its 49 compiled inputs match frozen source-set SHA-256 `5015e71d8eedd68ed68747539e5624e86267d857c115f79f3aede84bda08f9f1`.
-The recommended updater target is 0.12.1 for both saved sensor profiles.
+Firmware 0.12.1 is under investigation after owner-reported unusually high readings and intermittent missed pulls.
+It is removed from the updater’s selections; the previous 0.11.2 release is the default for both saved sensor profiles, without a symptom-fix claim.
+The exact 0.12.1 source and frozen release files remain preserved.
 
 ## Build from the source ZIP
 

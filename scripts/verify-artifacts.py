@@ -28,11 +28,15 @@ for p in root.rglob('*.3mf'):
         assert z.testzip() is None,p
         assert '[Content_Types].xml' in z.namelist(),p
 index=json.loads((root/'site/public/firmware/versions.json').read_text())
-assert catalog['version']==index['latest']==json.loads((root/'site/package.json').read_text())['version']
+assert catalog['version']==index['latest']
 assert catalog==json.loads((root/f"site/public/firmware/{index['latest']}/catalog.json").read_text())
 for entry in index['releases']:
-    c=json.loads((root/'site/public'/entry['catalog']).read_text())
-    assert c['version']==entry['version']
+    assert json.loads((root/'site/public'/entry['catalog']).read_text())['version']==entry['version']
+# Withdrawal changes the recommendation, not the preserved source or payloads.
+# Verify every versioned catalog, including releases removed from the picker.
+for catalog_path in (root/'site/public/firmware').glob('*/catalog.json'):
+    c=json.loads(catalog_path.read_text())
+    assert c['version']==catalog_path.parent.name
     frozen=root/'firmware/releases'/c['release']
     m=json.loads((frozen/'manifest.json').read_text())
     assert c['runtime']==m['runtime_version']
@@ -47,9 +51,11 @@ for entry in index['releases']:
     assert known['elfSha256']==app[176:208].hex()
     assert known['size']==len(app)
     count+=len(c['files'])
-current = root/'firmware/releases'/catalog['release']
-assert (root/'site/public'/catalog['files'][3]['path']).read_bytes()==(current/'LaunchLabMini.ino.bin').read_bytes()
-assert catalog['runtime']==json.loads((current/'manifest.json').read_text())['runtime_version']
+source_version=json.loads((root/'site/package.json').read_text())['version']
+source_catalog=json.loads((root/f'site/public/firmware/{source_version}/catalog.json').read_text())
+current = root/'firmware/releases'/source_catalog['release']
+assert (root/'site/public'/source_catalog['files'][3]['path']).read_bytes()==(current/'LaunchLabMini.ino.bin').read_bytes()
+assert source_catalog['runtime']==json.loads((current/'manifest.json').read_text())['runtime_version']
 # Verify the current release's metadata as well as its shipping application.
 manifest=json.loads((current/'manifest.json').read_text())
 for section,base in [('source_sha256',current/'source'),('artifact_sha256',current)]:
@@ -71,4 +77,4 @@ for path in (current/'source').rglob('*'):
         working=root/'firmware/LaunchLabMini'/path.relative_to(current/'source')
         assert working.is_file() and working.read_bytes()==path.read_bytes(),working
 assert (root/'firmware/LaunchLabRpm/analog_tachometer.h').read_bytes()==(current/'source/analog_tachometer.h').read_bytes()
-print(f"PASS: {count} checksums; all 3MF archives intact; selected {catalog['version']} app/source and version list match frozen firmware")
+print(f"PASS: {count} checksums; all 3MF archives intact; updater default {catalog['version']} and source {source_version} independently match frozen firmware")

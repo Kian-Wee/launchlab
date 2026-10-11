@@ -4,10 +4,14 @@ import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {APP_OFFSET, APP_IDENTITY_BYTES, compareVersions, validateCatalog, verifiedDownload, flashVerified, inspectInstalledApplication} from '../src/flasher.js';
 import {catalog,oldCatalog,base,localFetch,images,oldImages,fake,opts} from './helpers.js';
-test('default catalog is the frozen 0.12.1 application; old binary is preserved',()=>{
-  assert.equal(catalog.version,'0.12.1');assert.equal(images[3].data.length,808064);
+const archivedCatalog=JSON.parse(await readFile(new URL('../public/firmware/0.12.1/catalog.json',import.meta.url)));
+const archivedImages=await Promise.all(archivedCatalog.files.map(file=>verifiedDownload(file,base,localFetch)));
+test('default catalog restores frozen 0.11.2 while the investigated 0.12.1 binary is preserved',()=>{
+  assert.equal(catalog.version,'0.11.2');assert.equal(images[3].data.length,754688);
   assert.equal(oldCatalog.version,'0.10.1');assert.equal(oldImages[3].data.length,731728);
-  assert.equal(catalog.files[3].sha256,'a13d590f11c3c8e8f8ab84a0b8ebd8d69761cf1046e2a0f9fd1d9c162d01ad41');
+  assert.equal(catalog.files[3].sha256,'edaec5c245b8bc0e9e543e53896885e00d4c78df3eca17de57175beeff99c01e');
+  assert.equal(archivedImages[3].data.length,808064);
+  assert.equal(archivedCatalog.files[3].sha256,'a13d590f11c3c8e8f8ab84a0b8ebd8d69761cf1046e2a0f9fd1d9c162d01ad41');
 });
 test('release downloads have exact sizes and SHA-256',()=>assert.equal(images.length,4));
 test('versions compare numerically, not lexically or as decimals',()=>{
@@ -22,7 +26,7 @@ test('older verified application updates app only and never erases all',async()=
 });
 test('known newer installed application blocks an older selected target',async()=>{
   const l=fake({app:images[3].data});
-  await assert.rejects(flashVerified({...opts(l),catalog:oldCatalog,images:oldImages}),/Downgrade blocked.*0.12.1.*0.10.1/);
+  await assert.rejects(flashVerified({...opts(l),catalog:oldCatalog,images:oldImages}),/Downgrade blocked.*0.11.2.*0.10.1/);
   assert.equal(l.writes.length,0);
 });
 test('already installed exact version is a no-op; repeated update stays a no-op',async()=>{
@@ -33,7 +37,7 @@ test('already installed exact version is a no-op; repeated update stays a no-op'
 test('Arduino descriptor build label is not interpreted as LaunchLab version',async()=>{
   const descriptor=images[3].data.slice(48,80);assert.equal(new TextDecoder().decode(descriptor).split('\0')[0],'afa5cdd');
   const l=fake({app:images[3].data});const found=await inspectInstalledApplication(l,catalog);
-  assert.equal(found.state,'verified');assert.equal(found.application.version,'0.12.1');
+  assert.equal(found.state,'verified');assert.equal(found.application.version,'0.11.2');
 });
 test('complete device image checksum is required beyond matching ELF descriptor',async()=>{
   const app=images[3].data.slice();app[10000]^=1;const l=fake({app});
@@ -177,7 +181,7 @@ test('every preserved selectable catalog recognizes 0.12.1 and blocks its downgr
   for(const version of ['0.10.1','0.10.7','0.10.11','0.10.14','0.10.21','0.10.22','0.11.1','0.11.2']){
     const previous=JSON.parse(await readFile(new URL('../public/firmware/'+version+'/catalog.json',import.meta.url)));
     const previousImages=await Promise.all(previous.files.map(file=>verifiedDownload(file,base,localFetch)));
-    const loader=fake({app:images[3].data});
+    const loader=fake({app:archivedImages[3].data});
     await assert.rejects(flashVerified({...opts(loader),catalog:previous,images:previousImages}),/Downgrade blocked.*0.12.1/);
     assert.equal(loader.writes.length,0);
   }
@@ -186,8 +190,11 @@ test('every preserved selectable catalog recognizes 0.12.1 and blocks its downgr
 // Sensor-neutral release names retain all version, path and board guards.
 test('release identity permits original QRE names and current shared-profile names only',()=>{
   assert.equal(validateCatalog(oldCatalog),oldCatalog);
-  assert.equal(validateCatalog(catalog),catalog);
-  for(const release of ['0.12.1-sticks3-','0.12.1-sticks3-..','0.12.1-sticks3-flip-colors/extra','0.12.1-sticks3-../bad','0.12.1-stickc-flip-colors','0.12.0-sticks3-flip-colors','https://example.com/0.12.1-sticks3-flip-colors','0.12.1-sticks3-Flip-Colors']){
-    const c=structuredClone(catalog);c.release=release;assert.throws(()=>validateCatalog(c),/Release identity/);
+  for(const selected of [catalog,archivedCatalog]){
+    assert.equal(validateCatalog(selected),selected);
+    const version=selected.version;
+    for(const release of [`${version}-sticks3-`,`${version}-sticks3-..`,`${version}-sticks3-flip-colors/extra`,`${version}-sticks3-../bad`,`${version}-stickc-flip-colors`,'0.12.0-sticks3-flip-colors',`https://example.com/${version}-sticks3-flip-colors`,`${version}-sticks3-Flip-Colors`]){
+      const c=structuredClone(selected);c.release=release;assert.throws(()=>validateCatalog(c),/Release identity/);
+    }
   }
 });

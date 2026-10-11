@@ -1,6 +1,20 @@
 # Update, repair and rollback
 
-The latest release is **0.12.1**, runtime `0.12.1-sticks3-flip-colors`. Previous **0.11.2**, **0.11.1**, **0.10.22**, **0.10.21**, **0.10.14**, **0.10.11**, **0.10.7** and **0.10.1** remain selectable; the withdrawn 0.11.0 is recognised as an installed application so it can be updated, but is not offered. These files target M5StickS3 K150 with an analog QRE1113 or TCRT5000 sensor: after installing, choose Menu → Settings → Sensor profile. The old TCRT 0.2.0 build remains separate. **0.11.1** is the user-checked prototype revision. It adds saved themes (Classic, Mint, Amber, Violet), a personal-best effect on the recap, and USB backup and restore of history, personal bests, appearance and settings (`K` export, `R` restore). It fixes 0.11.0, which restarted about once a second after boot (a loop-task stack overflow) and was withdrawn. One firmware still serves both sensors through the saved **Sensor profile** setting (QRE / Standard with an 80-count mark floor, TCRT5000 with 60). It was installed app-only on the owner's M5StickS3 K150: no restarts in a 120 s soak, history kept, a backup and restore round trip identical, and the screen, themes and pulls confirmed. The detector, sampling, thresholds and saved history format are unchanged from 0.10.22, which keeps measuring pulls that start right after an automatic save. Battery endurance, long-session reliability, absolute RPM/angle calibration, physical browser transfer and first install/rollback, and stock recovery remain separate checks. See [recovery guidance](RECOVERY.md).
+Firmware **0.12.1 is under investigation** after owner-reported unusually high readings and intermittent missed pulls.
+It is removed from the updater’s selections, with its source, tag and release files preserved.
+The updater defaults to the previous **0.11.2** release, runtime `0.11.2-sticks3-score-preview`, without claiming it fixes these symptoms.
+Ordinary Update blocks downgrades; deliberate Repair / rollback still requires explicit confirmation.
+Earlier **0.11.1**, **0.10.22**, **0.10.21**, **0.10.14**, **0.10.11**, **0.10.7** and **0.10.1** remain selectable; the withdrawn 0.11.0 is recognised as an installed application so it can be updated, but is not offered.
+These files target M5StickS3 K150 with an analog QRE1113 or TCRT5000 sensor: after installing, choose Menu → Settings → Sensor profile.
+The old TCRT 0.2.0 build remains separate.
+**0.11.1** is the user-checked prototype revision.
+It adds saved themes (Classic, Mint, Amber, Violet), a personal-best effect on the recap, and USB backup and restore of history, personal bests, appearance and settings (`K` export, `R` restore).
+It fixes 0.11.0, which restarted about once a second after boot (a loop-task stack overflow) and was withdrawn.
+One firmware still serves both sensors through the saved **Sensor profile** setting (QRE / Standard with an 80-count mark floor, TCRT5000 with 60).
+It was installed app-only on the owner's M5StickS3 K150: no restarts in a 120 s soak, history kept, a backup and restore round trip identical, and the screen, themes and pulls confirmed.
+The detector, sampling, thresholds and saved history format are unchanged from 0.10.22, which keeps measuring pulls that start right after an automatic save.
+Battery endurance, long-session reliability, absolute RPM/angle calibration, physical browser transfer and first install/rollback, and stock recovery remain separate checks.
+See [recovery guidance](RECOVERY.md).
 
 0.12.1 discounts an isolated extra optical mark and offers ten accent themes, a mounted Flip mapping, a clearer RPM/level screen, five personal-best effects and optional sound.
 Both saved sensor profiles use one application.
@@ -36,7 +50,8 @@ Follow [Recovery and M5Stack software reinstall](RECOVERY.md) for the official M
 
 The exact 0.12.1 application is 808064 bytes, SHA-256 `a13d590f11c3c8e8f8ab84a0b8ebd8d69761cf1046e2a0f9fd1d9c162d01ad41`.
 Its native app-only install, complete readback and complete backup retention passed.
-The owner reported solid behavior while pulling during a preceding reading; five results were saved and the device returned Ready with zero acquisition/save errors.
+Initial owner feedback while pulling during a preceding reading was positive.
+The owner later reported unusually high readings and intermittent missed pulls; the earlier scoped checks do not establish resolution of these symptoms.
 The preceding variants passed palette/Flip/reset and small-status main-screen review with identical UI source.
 Twenty-eight native suites, nine production harnesses and updater software tests cover the production source and update guards.
 Physical browser transfer, four-image first install, rollback, reference-bearing restore, physical PB/Random sequencing and endurance remain outside acceptance.

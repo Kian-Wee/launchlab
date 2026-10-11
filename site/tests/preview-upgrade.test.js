@@ -2,7 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {validateCatalog, inspectInstalledApplication, flashVerified, verifiedDownload} from '../src/flasher.js';
-import {catalog, images, base, localFetch, md5, fake, opts} from './helpers.js';
+import {catalog as recommendedCatalog, images as recommendedImages, base, localFetch, md5, fake, opts as recommendedOpts} from './helpers.js';
+// Preserve the archived release's identity tests independently of the default.
+const catalog = JSON.parse(await readFile(new URL('../public/firmware/0.12.1/catalog.json',import.meta.url)));
+const images = await Promise.all(catalog.files.map(f=>verifiedDownload(f,base,localFetch)));
+const opts = loader => ({...recommendedOpts(loader),catalog,images});
 const recovery = JSON.parse(await readFile(new URL('../public/firmware/0.11.1/catalog.json',import.meta.url)));
 const recoveryImages = await Promise.all(recovery.files.map(f=>verifiedDownload(f,base,localFetch)));
 const preview = catalog.knownApplications.find(app=>app.runtime==='0.11.1-sticks3-effectpreview-dev');
@@ -46,4 +50,10 @@ test('post-write application corruption is reported as a verification failure',a
 });
 test('verified release can deliberately return to preserved 0.11.1 application',async()=>{
   const l=fake({app:images[3].data});assert.equal((await flashVerified({...opts(l),catalog:recovery,images:recoveryImages,mode:'recovery',recoveryConfirmed:true})).status,'verified');assert.deepEqual(l.writes[0].fileArray.map(f=>f.address),[0x10000]);assert.equal(l.writes[0].eraseAll,false);
+});
+test('restored 0.11.2 default recognizes installed 0.12.1 and blocks an ordinary downgrade',async()=>{
+  const l=fake({app:images[3].data});
+  assert.equal((await inspectInstalledApplication(l,recommendedCatalog)).application.version,'0.12.1');
+  await assert.rejects(flashVerified({...recommendedOpts(l),catalog:recommendedCatalog,images:recommendedImages}),/Downgrade blocked/);
+  assert.equal(l.writes.length,0);
 });

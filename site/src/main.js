@@ -26,7 +26,7 @@ updateControls();
 loadReleaseIndex(document.baseURI).then(index=>{
   $('release').replaceChildren(...index.releases.map(release=>{
     const option=document.createElement('option');
-    option.value=release.version;option.textContent='v'+release.version+(release.version===index.latest?' · latest available':' · previous release');
+    option.value=release.version;option.textContent='v'+release.version+(release.version===index.latest?' · updater default':' · previous release');
     return option;
   }));
   selection=createReleaseSelection({index,baseUrl:document.baseURI,onChange:state=>{

@@ -1,38 +1,38 @@
 {
-  "version": "0.12.1",
-  "runtime": "0.12.1-sticks3-flip-colors",
+  "version": "0.11.2",
+  "runtime": "0.11.2-sticks3-score-preview",
   "board": "M5StickS3 K150",
   "chip": "ESP32-S3",
   "flashBytes": 8388608,
   "applicationOffset": 65536,
   "files": [
     {
-      "path": "firmware/0.12.1/bootloader.bin",
+      "path": "firmware/0.11.2/bootloader.bin",
       "offset": 0,
       "size": 20256,
       "sha256": "8581a3fb98309f261482327b5ff51a2fabca0ec513f9ba38595ed04479794e58"
     },
     {
-      "path": "firmware/0.12.1/partitions.bin",
+      "path": "firmware/0.11.2/partitions.bin",
       "offset": 32768,
       "size": 3072,
       "sha256": "1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c"
     },
     {
-      "path": "firmware/0.12.1/boot_app0.bin",
+      "path": "firmware/0.11.2/boot_app0.bin",
       "offset": 57344,
       "size": 8192,
       "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"
     },
     {
-      "path": "firmware/0.12.1/application.bin",
+      "path": "firmware/0.11.2/application.bin",
       "offset": 65536,
-      "size": 808064,
-      "sha256": "a13d590f11c3c8e8f8ab84a0b8ebd8d69761cf1046e2a0f9fd1d9c162d01ad41"
+      "size": 754688,
+      "sha256": "edaec5c245b8bc0e9e543e53896885e00d4c78df3eca17de57175beeff99c01e"
     }
   ],
-  "validation": "28 ASan/UBSan native suites and nine public production harnesses passed. Target compilation and stack budgets passed. Exact app-only installation, complete application readback and complete backup retention passed. The owner reported solid behavior including pulls during a preceding reading; five results were saved, with Ready/active acquisition and zero acquisition/save errors afterward. All 18 confirmed private recorded-data configurations passed; ten remain diagnostic. First-install, physical browser write, calibrated RPM, physical PB/Random sequencing, endurance and the older missed-pull root cause remain outside qualification.",
-  "release": "0.12.1-sticks3-pulse-guard",
+  "validation": "27 native suites, seven production harnesses, target build and stack budgets passed. Owner reports the local candidate works. Device install pending for the final 0.11.2 binary.",
+  "release": "0.11.2-sticks3-qre1113-scorepreview",
   "knownApplications": [
     {
       "version": "0.10.0",
@@ -430,9 +430,5 @@
       "elfSha256": "d924656403b9883250de5d0a95463a2c72df9781f9084f5af76831e416943c2e",
       "sensor": "qre1113"
     }
-  ],
-  "profiles": [
-    "qre1113",
-    "tcrt5000"
   ]
 }
