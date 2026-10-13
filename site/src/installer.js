@@ -1,4 +1,5 @@
 import {validateCatalog, verifiedDownload, flashVerified} from './flasher.js';
+import {restartK150} from './device-reset.js';
 
 // One attempt owns its connection. Always release it before allowing a retry.
 // Callbacks keep this flow testable without opening a browser or a USB port.
@@ -53,7 +54,7 @@ export function createInstaller({baseUrl, requestPort, openConnection, md5, fetc
         onProgress(100);
         onLog(result.status==='up-to-date'?'Installed v'+catalog.version+' matches the complete archived application. No write needed.':'Application write completed and device MD5 matched.');
         let restarted=false;
-        try {await connection.loader.after('hard_reset');restarted=true;} catch { /* Verified bytes; manual restart is sufficient. */ }
+        try {await restartK150(connection.transport);restarted=true;} catch { /* Verified bytes; manual restart is sufficient. */ }
         const message=result.status==='up-to-date'?'Already on verified v'+catalog.version+'. No flash was written.':'v'+catalog.version+' installed and verified.';
         onStatus(message+(restarted?' Restarting.':' Press the side Power/Reset button to restart.'),'success');
         return {...result,restarted};

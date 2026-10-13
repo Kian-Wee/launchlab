@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createInstaller} from '../src/installer.js';
 import {catalog,oldCatalog,base,localFetch,fake,md5,images} from './helpers.js';
-function setup({loader=fake(),requestPort=async()=>({}),fetchFn=localFetch,disconnect=async()=>{}}={}) {
-  const state={choosers:0,opens:0,closes:0,busy:[],statuses:[],recovery:[],devices:[]};
+function setup({loader=fake(),requestPort=async()=>({}),fetchFn=localFetch,disconnect=async()=>{},resetError=null}={}) {
+  const state={choosers:0,opens:0,closes:0,busy:[],statuses:[],recovery:[],devices:[],signals:[]};
   const installer=createInstaller({baseUrl:base,md5,fetchFn,
     requestPort:async()=>{state.choosers++;return requestPort();},
-    openConnection:async()=>{state.opens++;return {loader,transport:{disconnect:async()=>{state.closes++;await disconnect();}}};},
+    openConnection:async()=>{state.opens++;return {loader,transport:{setDTR:async value=>{state.signals.push(['DTR',value]);if(resetError)throw resetError;},setRTS:async value=>{state.signals.push(['RTS',value]);},disconnect:async()=>{state.closes++;await disconnect();}}};},
     onBusy:b=>state.busy.push(b),onStatus:(message,result)=>state.statuses.push({message,result}),onRecovery:r=>state.recovery.push(r),onDevice:d=>state.devices.push(d)});
   return {installer,state,loader};
 }
@@ -54,7 +54,7 @@ test('write interruption is never reported as success; repair retry closes each 
   assert.equal((await s.installer.run({catalog,mode:'update'})).status,'up-to-date');assert.equal(l.writes.length,2);assert.equal(s.state.closes,4);
 });
 test('reset failure after verified write requests manual restart and keeps success evidence',async()=>{
-  const l=fake();l.after=async()=>{throw new Error('reset unavailable');};const s=setup({loader:l});
+  const l=fake();const s=setup({loader:l,resetError:new Error('reset unavailable')});
   const result=await s.installer.run({catalog,mode:'update'});assert.equal(result.status,'verified');assert.equal(result.restarted,false);
   assert.match(s.state.statuses.at(-1).message,/Power\/Reset/);assert.equal(s.state.statuses.at(-1).result,'success');assert.equal(s.state.closes,1);
 });
@@ -97,4 +97,14 @@ test('unreadable capacity is a preflight refusal and each retry reopens and rech
 test('NotFoundError after chooser is a failure, not a harmless cancelled selection',async()=>{
   const l=fake();l.writeFlash=async()=>{throw Object.assign(new Error('device disappeared'),{name:'NotFoundError'});};const s=setup({loader:l});
   const r=await s.installer.run({catalog,mode:'update'});assert.equal(r.status,'error');assert.equal(r.writeStarted,true);assert.match(r.advice,/did not finish/);assert.equal(s.state.closes,1);
+});
+
+ test('successful writes and same-image no-ops pulse reset before closing USB',async()=>{
+  for(const app of [undefined,images[3].data]){
+    const s=setup({loader:fake({app})});
+    const result=await s.installer.run({catalog,mode:'update'});
+    assert.equal(result.restarted,true);
+    assert.deepEqual(s.state.signals,[['DTR',false],['RTS',true],['RTS',false]]);
+    assert.equal(s.state.closes,1);
+  }
 });
