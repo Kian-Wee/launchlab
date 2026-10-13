@@ -11,6 +11,7 @@
 #include "practice_history.h"
 #include "rpm_estimator.h"
 #include "sensor_profile.h"
+#include "mount_orientation.h"
 
 // A portable copy of everything a player would miss after a crash or on a new
 // M5: history, personal bests, appearance, the last recap and settings. Bench
@@ -27,6 +28,7 @@ struct UserSettings {
   RpmEstimator::Mode rpmMethod=RpmEstimator::DEFAULT_MODE;
   StickS3SensorProfile::Mode sensorProfile=StickS3SensorProfile::DEFAULT_MODE;
   bool flipped=false;
+  MountOrientation::Mode mount=MountOrientation::Mode::Top;
   static bool validBrightness(uint8_t value){return value>=10 && value<=100 && value%10==0;}
 };
 
@@ -64,7 +66,7 @@ inline size_t encode(const Contents &c,const char *runtime,Buffer &out) {
   Appearance::Bests::Image bests;c.bests.encode(bests);section(Bests,bests.data(),bests.size());
   if(c.hasMotion && c.motion.valid()){LaunchMotion::encode(c.motion,1,*motion);section(Motion,motion->data(),motion->size());}
   const uint8_t settings[SETTINGS_BYTES]={c.settings.sleepMinutes,c.settings.brightness,uint8_t(c.settings.rpmMethod),
-    uint8_t(c.settings.sensorProfile),uint8_t(c.settings.flipped),0,0,0};
+    uint8_t(c.settings.sensorProfile),uint8_t(c.settings.flipped),uint8_t(c.settings.mount),0,0};
   section(Settings,settings,sizeof(settings));
   put32(out.data(),MAGIC);put32(out.data()+4,FORMAT);put32(out.data()+8,uint32_t(p+4));
   std::strncpy(reinterpret_cast<char *>(out.data()+12),runtime,RUNTIME_BYTES);
@@ -100,12 +102,14 @@ inline bool decode(const uint8_t *data,size_t n,Contents &out) {
         ok=LaunchMotion::decode(*image,c->motion,generation) && c->motion.valid();c->hasMotion=ok;break;
       }
       case Settings:{
-        if(length!=SETTINGS_BYTES || body[5] || body[6] || body[7])break;
+        // The first reserved byte now carries mounting. Legacy backups are
+        // zero (Top); older firmware rejects Sidecar before writing anything.
+        if(length!=SETTINGS_BYTES || body[6] || body[7])break;
         auto &s=c->settings;
         ok=InactivityTimer::validMinutes(body[0]) && UserSettings::validBrightness(body[1]) &&
-          RpmEstimator::valid(body[2]) && StickS3SensorProfile::valid(body[3]) && body[4]<=1;
+          RpmEstimator::valid(body[2]) && StickS3SensorProfile::valid(body[3]) && body[4]<=1 && MountOrientation::valid(body[5]);
         if(ok){s.sleepMinutes=body[0];s.brightness=body[1];s.rpmMethod=RpmEstimator::Mode(body[2]);
-          s.sensorProfile=StickS3SensorProfile::Mode(body[3]);s.flipped=body[4];}
+          s.sensorProfile=StickS3SensorProfile::Mode(body[3]);s.flipped=body[4];s.mount=MountOrientation::Mode(body[5]);}
         break;
       }
     }

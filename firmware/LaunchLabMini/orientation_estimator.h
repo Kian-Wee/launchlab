@@ -12,6 +12,14 @@ public:
   uint32_t updates()const{return updates_;}
   uint32_t resets()const{return resets_;}
   bool rest()const{return filter_.getRestDetected();}
+  // A mounting change changes the coordinate frame of both sensors. Previous
+  // gyro bias, interpolation and pose cannot cross that boundary. Unlike a
+  // timestamp gap, relearn bias in the new frame and require fresh warmup.
+  void resetFrame() {
+    filter_.resetState();previous_={};next_=0;
+    for(auto &v:integral_)v=0;
+    segmentUpdates_=0;++resets_;
+  }
   float biasDegrees(float *out)const {
     vqf_real_t bias[3];const float sigma=filter_.getBiasEstimate(bias)*LaunchMotion::DEG;
     for(unsigned j=0;j<3;++j)out[j]=bias[j]*LaunchMotion::DEG;

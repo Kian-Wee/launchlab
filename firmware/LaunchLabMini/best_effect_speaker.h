@@ -4,6 +4,7 @@
 #include <esp_timer.h>
 #include "best_effect_sound.h"
 #include "motion_acquisition.h"
+#include "pm1_idle.h"
 
 // Plays personal-best sounds on the StickS3 speaker (ES8311 codec and amp).
 // They are powered only while a sound plays: M5.Speaker.begin() before and
@@ -46,6 +47,7 @@ public:
     if(!begun_) {
       if(!imu_.lock()){++lockMisses_;return false;}
       const int64_t started=esp_timer_get_time();
+      if(!pm1Idle().ensureAwake()){imu_.unlock();return false;}
       const bool ok=M5.Speaker.begin();
       beginUs_=std::max(beginUs_,uint32_t(esp_timer_get_time()-started));imu_.unlock();
       if(!ok)return false;
@@ -61,6 +63,7 @@ public:
   void tick(bool measuring) {
     if(!begun_ || measuring || M5.Speaker.isPlaying() || !imu_.lock())return;
     const int64_t started=esp_timer_get_time();
+    if(!pm1Idle().ensureAwake()){imu_.unlock();return;}
     M5.Speaker.end();endUs_=std::max(endUs_,uint32_t(esp_timer_get_time()-started));
     imu_.unlock();begun_=false;
   }

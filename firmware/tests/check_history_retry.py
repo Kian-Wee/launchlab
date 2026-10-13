@@ -21,12 +21,15 @@ def function(name):
     return source[start:cursor]
 prefix = r'''
 #include "history_checkpoint.h"
+#include "controls.h"
 #include "sensor_profile.h"
 #include "practice_store.h"
 #include "appearance_store.h"
 #include "rpm_estimator.h"
 #include "orientation_estimator.h"
 #include "power_status.h"
+struct IdleFake {template<class F>bool run(F fn){return fn();}};
+static IdleFake &pm1Idle(){static IdleFake idle;return idle;}
 #include "usb_awake.h"
 #include "power_diagnostics.h"
 #include "wake_ui_state.h"
@@ -34,6 +37,8 @@ prefix = r'''
 #include <cassert>
 #include <iostream>
 #include <vector>
+static Controls::State controls;
+static bool wipeBlocked=false;
 static Appearance::Config appearance;static Appearance::Bests personalBests;
 static AppearanceStore<Appearance::Bests> bestStore;static AppearanceStore<Appearance::Config> appearanceStore;static Appearance::Celebration bestEffect;
 static Appearance::Effect celebrationEffect(){return appearance.effect==Appearance::Effect::Random?Appearance::Effect::Orbit:appearance.effect;}
@@ -102,6 +107,7 @@ static void level(unsigned value,uint64_t us){
   }
 }
 static void reset(unsigned lag=0,uint64_t warmUs=2200000){
+  controls={};wipeBlocked=false;
   Preferences::data.clear();Preferences::zeroLengthKeys.clear();Preferences::failWrite=false;Preferences::shortRead=false;
   clockUs=1000000;practice=PracticeHistory{};practiceStore=PracticeStore{};
   latestMotion={};acquisition=Acquisition{};imuAcquisition=ImuAcquisition{};

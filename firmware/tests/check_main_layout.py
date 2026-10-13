@@ -2,7 +2,7 @@
 """Exercise extracted main-screen layout with synthetic states and geometry.
 
 This host contract test uses conservative font envelopes, not raster pixels.
-The release receipt records the separate actual-M5GFX-font pixel proof.
+It extracts the production status and drawing functions.
 """
 from pathlib import Path
 import os
@@ -70,7 +70,7 @@ static bool visibleDisplayFlipped(){return flip;}
 static Appearance::Theme visibleTheme(){return theme;}
 static uint16_t themeAccent(){return Appearance::accent(theme);}
 struct Snapshot {
-  bool ready=true,suspended=false,valid=false,signalFault=false;
+  bool ready=true,suspended=false,resting=false,valid=false,signalFault=false;
   float resultRpm=0;
   AnalogTachometer::Phase phase=AnalogTachometer::Phase::Ready;
 '''
@@ -80,10 +80,10 @@ prefix += "\nstatic void drawMain(lgfx::LGFXBase &view,const Snapshot &s){const 
 tests = r'''
 int main(){
   unsigned cases=0;
-  for(unsigned state=0;state<8;++state)for(unsigned rpm=0;rpm<3;++rpm)
+  for(unsigned state=0;state<9;++state)for(unsigned rpm=0;rpm<3;++rpm)
   for(bool reversed:{false,true})for(unsigned palette=0;palette<Appearance::THEMES;++palette)
   for(unsigned feed=0;feed<5;++feed)for(unsigned notice:{0u,1000u,1500u}){
-    Snapshot s;s.suspended=state==0;s.ready=state!=1;s.signalFault=state==2;
+    Snapshot s;s.suspended=state==0 || state==8;s.resting=state==8;s.ready=state!=1;s.signalFault=state==2;
     s.phase=state==3?AnalogTachometer::Phase::Paused:state==4?AnalogTachometer::Phase::Settling:
       state==6?AnalogTachometer::Phase::Launch:state==7?AnalogTachometer::Phase::Hold:AnalogTachometer::Phase::Ready;
     s.valid=rpm!=0;s.resultRpm=rpm==1?8123:99999;

@@ -1,38 +1,38 @@
 {
-  "version": "0.12.2",
-  "runtime": "0.12.2-sticks3-flip-colors",
+  "version": "0.13.5",
+  "runtime": "0.13.5-sticks3-idle-adc-pm",
   "board": "M5StickS3 K150",
   "chip": "ESP32-S3",
   "flashBytes": 8388608,
   "applicationOffset": 65536,
   "files": [
     {
-      "path": "firmware/0.12.2/bootloader.bin",
+      "path": "firmware/0.13.5/bootloader.bin",
       "offset": 0,
       "size": 20256,
       "sha256": "8581a3fb98309f261482327b5ff51a2fabca0ec513f9ba38595ed04479794e58"
     },
     {
-      "path": "firmware/0.12.2/partitions.bin",
+      "path": "firmware/0.13.5/partitions.bin",
       "offset": 32768,
       "size": 3072,
       "sha256": "1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c"
     },
     {
-      "path": "firmware/0.12.2/boot_app0.bin",
+      "path": "firmware/0.13.5/boot_app0.bin",
       "offset": 57344,
       "size": 8192,
       "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"
     },
     {
-      "path": "firmware/0.12.2/application.bin",
+      "path": "firmware/0.13.5/application.bin",
       "offset": 65536,
-      "size": 808144,
-      "sha256": "9548c322ae1f7383641e62ec5b81f7a2f54777c05034f8c5aac47a40b4f25b49"
+      "size": 827952,
+      "sha256": "0203763a133de42bf09dd3c5a93a6cbe074c974e815d8d5aff6d2541f6a88edf"
     }
   ],
-  "validation": "31 ASan/UBSan native suites and nine public production harnesses passed. Pinned target compilation and stack budgets passed. Both corrections were exercised in a related installed diagnostic build with complete application readback and backup retention. The owner identified a soldering issue as the cause of the reported intermittent behavior. Same-source recorded-data checks retain 18 confirmed passes and 12 diagnostic configurations. Device install pending: the exact production 0.12.2 application has not been flashed or read back. Calibrated RPM, first install, physical browser write, physical PB/Random sequencing and endurance remain unqualified.",
-  "release": "0.12.2-sticks3-recovery",
+  "validation": "Exact shipping application installed and read back; software checks and pinned target compilation passed.",
+  "release": "0.13.5-sticks3-idle-adc-pm",
   "profiles": [
     "qre1113",
     "tcrt5000"
@@ -454,6 +454,24 @@
       "elfSha256": "990a1e38f05037cf9f1bd826cbec63a948e15cbefc58ab8778c9ba71df34ab54",
       "sensor": "qre1113",
       "buildId": "0.12.1-sticks3-private-recovery-diagnostic"
+    },
+    {
+      "version": "0.13.5",
+      "runtime": "0.13.5-sticks3-idle-adc-pm",
+      "size": 827952,
+      "sha256": "0203763a133de42bf09dd3c5a93a6cbe074c974e815d8d5aff6d2541f6a88edf",
+      "md5": "b57281968e4c6a7480154dddb9f61f13",
+      "elfSha256": "13aa904b7b46d0e37a2509e274ccd99ebf0d269651e00d70df262fce9ac81d54",
+      "sensor": "qre1113"
+    },
+    {
+      "version": "0.13.4",
+      "runtime": "0.13.4-sticks3-stillness",
+      "size": 818512,
+      "sha256": "d179ca5320ac56a399e729b5bba60b328a297c1696c7e730c114ef510f53695b",
+      "md5": "7ff2cc3246a3d67d52f3e1e79a65dfe3",
+      "elfSha256": "8ae3448af70f3251e42adf7f2f7d88734d8c1c0b61f9ae3b62494203cdf01bd8",
+      "sensor": "qre1113"
     }
   ]
 }

@@ -1,6 +1,10 @@
 {
-  "latest": "0.12.2",
+  "latest": "0.13.5",
   "releases": [
+    {
+      "version": "0.13.5",
+      "catalog": "firmware/0.13.5/catalog.json"
+    },
     {
       "version": "0.12.2",
       "catalog": "firmware/0.12.2/catalog.json"

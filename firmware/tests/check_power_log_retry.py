@@ -50,7 +50,7 @@ struct FakePrefs {
 struct {struct {int getBrightness(){return 100;}} Display;} M5;
 struct {void println(const char*){}} Serial;
 enum class Action {IdleCheckpointBegin,CheckpointEnd};
-struct Snapshot {AnalogTachometer::Phase phase;uint32_t launches;};
+struct Snapshot {AnalogTachometer::Phase phase;uint32_t launches;bool resting=false;};
 struct FakeAcquisition {
   AnalogTachometer detector;
   HistoryCheckpoint saved;
@@ -98,6 +98,11 @@ static void run(const char* name,bool ready,bool fail){
 #endif
 }
 int main(){
+  reset(true,false);
+  for(unsigned i=0;i<250;++i){clockMs=300000+i*10;tickPowerLog(clockMs,{AnalogTachometer::Phase::Ready,0,true});}
+  assert(acquisition.begins==0 && powerPrefs.writes==0 && powerLogDirty);
+  clockMs=600000;tickPowerLog(clockMs,{AnalogTachometer::Phase::Ready,0,false});
+  assert(acquisition.begins==1 && powerPrefs.writes==1 && !powerLogDirty);
   run("failed NVS write",true,true);
   run("invalid existing optional power log",false,false);
   reset(true,false);clockMs=300000;

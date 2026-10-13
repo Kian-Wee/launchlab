@@ -450,6 +450,24 @@
       "elfSha256": "990a1e38f05037cf9f1bd826cbec63a948e15cbefc58ab8778c9ba71df34ab54",
       "sensor": "qre1113",
       "buildId": "0.12.1-sticks3-private-recovery-diagnostic"
+    },
+    {
+      "version": "0.13.5",
+      "runtime": "0.13.5-sticks3-idle-adc-pm",
+      "size": 827952,
+      "sha256": "0203763a133de42bf09dd3c5a93a6cbe074c974e815d8d5aff6d2541f6a88edf",
+      "md5": "b57281968e4c6a7480154dddb9f61f13",
+      "elfSha256": "13aa904b7b46d0e37a2509e274ccd99ebf0d269651e00d70df262fce9ac81d54",
+      "sensor": "qre1113"
+    },
+    {
+      "version": "0.13.4",
+      "runtime": "0.13.4-sticks3-stillness",
+      "size": 818512,
+      "sha256": "d179ca5320ac56a399e729b5bba60b328a297c1696c7e730c114ef510f53695b",
+      "md5": "7ff2cc3246a3d67d52f3e1e79a65dfe3",
+      "elfSha256": "8ae3448af70f3251e42adf7f2f7d88734d8c1c0b61f9ae3b62494203cdf01bd8",
+      "sensor": "qre1113"
     }
   ],
   "profiles": [

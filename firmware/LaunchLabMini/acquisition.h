@@ -18,11 +18,13 @@ class StickS3Acquisition {
 public:
   static constexpr uint32_t SAMPLE_HZ=AnalogTachometer::SAMPLE_HZ;
   static constexpr uint32_t RING_SAMPLES=SAMPLE_HZ*60;
-  enum class Action:uint8_t { Pin, Suspend, Resume, Reset, CheckpointBegin, CheckpointEnd, ShutdownBegin, IdleCheckpointBegin, Estimator, HistoryIdleCheckpointBegin, SensorProfile };
+  enum class Action:uint8_t { Pin, Suspend, Resume, Reset, CheckpointBegin, CheckpointEnd, ShutdownBegin, IdleCheckpointBegin, Estimator, HistoryIdleCheckpointBegin, SensorProfile, IdlePause, IdleResume };
   struct Snapshot {
     AnalogTachometer::Phase phase=AnalogTachometer::Phase::Settling;
     AnalogTachometer::End ended=AnalogTachometer::End::None;
     bool ready=false,suspended=false,enabled=true,valid=false,signalFault=false;
+    bool opticalIdle=false;
+    bool resting=false;
     uint8_t pin=1;
     esp_err_t error=ESP_OK;
     uint64_t samples=0,detectorUs=0,ringFirst=0;
@@ -38,7 +40,7 @@ public:
     StickS3SensorProfile::Mode sensorProfile=StickS3SensorProfile::DEFAULT_MODE;
     float candidateRpm=0,noise=0,amplitude=0,startNoise=0,contrast=0,hysteresis=0;
     const char *stateName() const {
-      if(suspended)return "EXPORT";
+      if(suspended)return resting?"RESTING":"EXPORT";
       if(!ready)return "ADC ERROR";
       if(signalFault)return "CHECK SENSOR";
       switch(phase){case AnalogTachometer::Phase::Paused:return "PAUSED";
@@ -106,7 +108,7 @@ private:
   uint32_t requestId_=0,overflows_=0,seenOverflows_=0,readErrors_=0,invalidFrames_=0,lostEvents_=0;
   uint16_t pendingMarks_=0;
   uint8_t pin_=1,channel_=0;
-  bool ready_=false,suspended_=false;
+  bool ready_=false,suspended_=false,idlePaused_=false;
   bool checkpoint_=false;
   HistoryCheckpoint checkpointResult_;
   esp_err_t error_=ESP_OK;
@@ -221,7 +223,7 @@ private:
       case Action::Reset:discontinuity();break;
       case Action::Pin:
         if(c.value<1 || c.value>10){ok=false;break;}
-        closeAdc();pin_=c.value;suspended_=false;discontinuity();ok=initAdc();break;
+        closeAdc();pin_=c.value;suspended_=idlePaused_=checkpoint_=false;discontinuity();ok=initAdc();break;
       case Action::Suspend:
         if(!ready_ || suspended_){ok=false;break;}
         error_=adc_continuous_stop(adc_);ok=error_==ESP_OK;
@@ -231,6 +233,11 @@ private:
         if(!ready_){ok=false;break;}
         [[fallthrough]];
       case Action::ShutdownBegin:
+        // A verified Ready idle pause already owns a stopped ADC and checkpoint.
+        // Convert it into ordinary shutdown ownership without restarting ADC.
+        if(c.action==Action::ShutdownBegin && idlePaused_ && checkpoint_ && adc_ && detector_.launches==c.value) {
+          idlePaused_=false;break;
+        }
         // Recheck on the detector's owner: a burst can start after the UI
         // reads its snapshot. Never let an idle shutdown interrupt that burst.
         // Ready can already hold the first strong marks of an unconfirmed pull.
@@ -239,16 +246,19 @@ private:
         if(ready_){error_=adc_continuous_stop(adc_);ok=error_==ESP_OK;}
         if(ok){checkpointResult_=HistoryCheckpoint(detector_);ready_=false;suspended_=true;checkpoint_=adc_!=nullptr;}
         break;
+      case Action::IdlePause:
       case Action::HistoryIdleCheckpointBegin:
         // Automatic coalesced history saves may flush after Ready. Recheck
         // candidates and the accepted counter on the ADC owner before stopping.
-        if(!ready_ || suspended_ || !HistoryCheckpoint::allowedIdle(detector_,c.value)){ok=false;break;}
+        if(!ready_ || suspended_ || !HistoryCheckpoint::allowedIdle(detector_,c.value) ||
+           (c.action==Action::IdlePause && detector_.phase!=AnalogTachometer::Phase::Ready)){ok=false;break;}
         error_=adc_continuous_stop(adc_);ok=error_==ESP_OK;
-        if(ok){checkpointResult_=HistoryCheckpoint(detector_);ready_=false;suspended_=checkpoint_=true;}
+        if(ok){checkpointResult_=HistoryCheckpoint(detector_);ready_=false;suspended_=checkpoint_=true;
+          idlePaused_=c.action==Action::IdlePause;}
         break;
       case Action::Resume:
         if(!suspended_ || !adc_){ok=false;break;}
-        suspended_=false;discontinuity();
+        suspended_=idlePaused_=checkpoint_=false;discontinuity();
         error_=adc_continuous_flush_pool(adc_);
         if(error_==ESP_OK)error_=adc_continuous_start(adc_);
         ready_=error_==ESP_OK;ok=ready_;seenOverflows_=overflowCount();
@@ -258,9 +268,12 @@ private:
         error_=adc_continuous_stop(adc_);ok=error_==ESP_OK;
         if(ok){checkpointResult_=HistoryCheckpoint(detector_);ready_=false;suspended_=checkpoint_=true;}
         break;
+      case Action::IdleResume:
+        if(!idlePaused_){ok=false;break;}
+        [[fallthrough]];
       case Action::CheckpointEnd:
         if(!checkpoint_ || !suspended_ || !adc_){ok=false;break;}
-        checkpoint_=suspended_=false;
+        checkpoint_=suspended_=idlePaused_=false;
         ring_.discontinuity();checkpointResult_.restore(detector_);takeMarks();resetWindow();
         error_=adc_continuous_flush_pool(adc_);
         if(error_==ESP_OK)error_=adc_continuous_start(adc_);
@@ -276,8 +289,9 @@ private:
     const bool changed=detector_.resultRevision!=previousRevision_ || detector_.phase!=previousPhase_ || detector_.signalFault!=previousFault_;
     if(!force && !changed && now-lastPublish_<10000)return;
     Snapshot s;
-    s.phase=detector_.phase;s.ended=detector_.ended;s.ready=ready_;s.suspended=suspended_;
+    s.phase=detector_.phase;s.ended=detector_.ended;s.ready=ready_;s.suspended=suspended_;s.resting=idlePaused_;
     s.enabled=detector_.enabled;s.valid=detector_.resultValid;s.signalFault=detector_.signalFault;
+    s.opticalIdle=detector_.historyCheckpointIdle();
     s.pin=pin_;s.error=error_;s.samples=samples_;s.detectorUs=detector_.nowUs;
     s.ringCount=ring_.count();s.ringFirst=ring_.first();
     s.burstStartHostUs=burstStartHostUs_;s.burstEndHostUs=burstEndHostUs_;
@@ -285,8 +299,8 @@ private:
     s.edges=detector_.opticalEdges;s.weak=detector_.weakWindows;s.slow=detector_.slowWindows;
     s.shape=detector_.rejectedShape;s.inconsistent=detector_.inconsistentWindows;
     s.rearmExtensions=detector_.rearmExtensions;s.rearmMs=detector_.rearmMs();
-    s.last=last_;s.mean=mean_;s.rate=rate_;s.minimum=displayMin_;s.maximum=displayMax_;
-    s.processingPercent=processingPercent_;s.overflows=overflowCount();s.readErrors=readErrors_;
+    s.last=last_;s.mean=mean_;s.rate=idlePaused_?0:rate_;s.minimum=displayMin_;s.maximum=displayMax_;
+    s.processingPercent=idlePaused_?0:processingPercent_;s.overflows=overflowCount();s.readErrors=readErrors_;
     s.invalidFrames=invalidFrames_;s.lostEvents=lostEvents_;s.maxBatchUs=maxBatchUs_;
     s.maxReadGapUs=maxReadGapUs_;s.stackFree=uxTaskGetStackHighWaterMark(nullptr);
     s.estimator=estimator_;s.sensorProfile=sensorProfile_;

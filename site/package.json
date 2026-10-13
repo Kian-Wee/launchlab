@@ -1,6 +1,6 @@
 {
   "name": "launchlab-mini-updater",
-  "version": "0.12.2",
+  "version": "0.13.5",
   "private": true,
   "type": "module",
   "scripts": {

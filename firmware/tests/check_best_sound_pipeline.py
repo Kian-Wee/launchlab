@@ -32,9 +32,11 @@ cue_start = source.index("  if(!tournamentMode && !diagnostics && !historyPage &
 cue_end = source.index("  launchFeedback.replayPresented(", cue_start)
 cue = source[cue_start:cue_end]
 deadline = re.search(r"static constexpr uint32_t SOUND_LATE_MS=\d+;", source)[0]
-# Reproduce the source order around capture completion and the first draw.
+# Reproduce normal capture/sound/draw order. The locked wipe branch renders
+# only its confirmation/recovery screen and returns before this path.
 loop = source[source.index("void loop() {"):]
-assert loop.index("finishMotion();") < loop.index("tickSound(s);") < loop.index("draw(s);")
+capture_at=loop.index("finishMotion();")
+assert capture_at < loop.index("tickSound(s);") < loop.index("draw(s);",capture_at)
 
 prefix = r'''
 #include "appearance_store.h"
@@ -78,6 +80,8 @@ struct SpeakerPeripheral {
   void stop(){playing=false;++stops;}
 };
 static struct {SpeakerPeripheral Speaker;} M5;
+struct IdleFake {bool ensureAwake(){return true;}};
+static IdleFake &pm1Idle(){static IdleFake idle;return idle;}
 static struct {template<class... T>void printf(const char*,T...){}void println(const char*){}} Serial;
 '''
 state = r'''

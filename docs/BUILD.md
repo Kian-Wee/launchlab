@@ -13,7 +13,7 @@ M5StickC, C Plus and C Plus2 are different boards and are not supported by these
 
 [Current source packages and plates](HARDWARE_VERSIONS.md#current-downloads) supply the exact files for these images.
 The sensor plate and mount-pair plate are separate.
-Firmware 0.12.2 remains current; Sidecar motion-axis normalization is planned for 0.13.1 and is not included yet.
+Firmware 0.13.5 supports both saved sensor profiles. Choose **Settings → Mounting → Top or Sidecar** to match the physical layout; display flip is a separate setting.
 
 ## Parts and wiring
 

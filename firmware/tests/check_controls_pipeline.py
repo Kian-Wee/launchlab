@@ -27,9 +27,12 @@ prefix=r'''
 #include "display_flip_setting.h"
 #include "display_orientation.h"
 #include "sensor_profile_setting.h"
+#include "mount_orientation_setting.h"
+#include "level_indicator.h"
 #include "power_status.h"
 #include "practice_ui.h"
 #include "launch_feedback.h"
+#include "wipe_confirmation.h"
 #include <cassert>
 #include <iostream>
 '''
@@ -45,6 +48,11 @@ static uint32_t millis(){return 10000;}
 static unsigned soundPreviews=0,effectPreviews=0;static void previewSound(){++soundPreviews;}static void previewEffect(){++effectPreviews;}
 using Controls::Page;
 static Controls::State controls;
+static Controls::Gesture gestureA,gestureB;
+static WipeConfirmation wipeConfirmation;
+static bool wipeFailed=false,wipeBlocked=false;
+static struct {void cancel(){}}restoreRx;
+static void beginWipe();static void cancelWipe();
 static bool tournamentMode=false,historyPage=false,dirty=false,diagnostics=false,demo=false,motionDemo=false,motionPending=false,settingsSaveError=false,restorePreview=false,displayFlipped=false;
 static uint8_t brightnessPercent=40;
 static uint32_t historyOffset=0,newSessionAt=0,tournamentHintUntil=0;
@@ -58,6 +66,12 @@ static LaunchFeedback launchFeedback;
 static InactivityTimer inactivity;
 static RpmEstimator::Mode rpmEstimator=RpmEstimator::DEFAULT_MODE;
 static StickS3SensorProfile::Mode sensorProfile=StickS3SensorProfile::DEFAULT_MODE;
+static MountOrientation::Mode mountMode=MountOrientation::Mode::Top;
+static StickS3Level level;static StickS3Level::Reading drawnLevel;static uint64_t lastLevelSampleUs=0;
+struct MotionAcquisition {
+  MountOrientation::Mode mode=MountOrientation::Mode::Top;unsigned changes=0;bool fail=false;
+  bool setMount(MountOrientation::Mode next){if(fail)return false;mode=next;++changes;return true;}
+}imuAcquisition;
 struct Prefs:Preferences {
   unsigned writes=0;
   size_t putUChar(const char *key,uint8_t value){++writes;return putBytes(key,&value,1);}
@@ -86,19 +100,30 @@ load_start=source.index('  if(!DisplayFlipSetting::load(')
 load_statement=source[load_start:source.index(';',load_start)+1]
 boot_rotation=re.findall(r'M5.Display.setRotation\([^;]+;',source)[-1]
 prefix+='\nstatic void restoreDisplayAtBoot(){'+load_statement+boot_rotation+'}\n'
+mount_load_start=source.index('  if(!MountOrientationSetting::load(')
+mount_load=source[mount_load_start:source.index(';',mount_load_start)+1]
+prefix+='\nstatic void restoreMountAtBoot(){'+mount_load+'assert(imuAcquisition.setMount(mountMode));}\n'
 visible_start=source.index('static bool visibleDisplayFlipped()')
 prefix+='\n'+source[visible_start:source.index('}',visible_start)+1]+'\n'
 tests=r'''
 static void reset(){
   controls={};appearance={};appearanceStore={};bestEffect={};tournamentMode=historyPage=dirty=diagnostics=demo=motionDemo=motionPending=settingsSaveError=restorePreview=displayFlipped=false;
+  gestureA={};gestureB={};wipeConfirmation={};wipeFailed=wipeBlocked=false;
   historyOffset=newSessionAt=tournamentHintUntil=0;historyView=PracticeUI::View::Recent;tournamentView=TournamentView::RecordingOnly;
   practice={};demoPractice={};latestMotion={};launchFeedback={};inactivity={};brightnessPercent=40;rpmEstimator=RpmEstimator::DEFAULT_MODE;sensorProfile=StickS3SensorProfile::DEFAULT_MODE;
   acquisition={};prefs={};M5.Display.brightness=102;M5.Display.rotation=2;
+  mountMode=MountOrientation::Mode::Top;imuAcquisition={};level={};drawnLevel={};lastLevelSampleUs=0;
   Preferences::data.clear();Preferences::zeroLengthKeys.clear();Preferences::failWrite=Preferences::shortRead=false;
   assert(prefs.begin("controls-test",false));assert(appearanceStore.begin(appearance,"controls-appearance","cfg0","cfg1"));
 }
 static void edit(unsigned row){controls.page=Page::Settings;controls.setting=row;syncNavigation();buttonA();assert(controls.page==Page::Edit);}
 int main(){
+  reset();restoreMountAtBoot();assert(mountMode==MountOrientation::Mode::Top && !prefs.writes);
+  for(auto selected:{MountOrientation::Mode::Sidecar,MountOrientation::Mode::Top}) {
+    assert(MountOrientationSetting::save(prefs,selected));const auto stored=Preferences::data;
+    mountMode=MountOrientation::Mode(99);restoreMountAtBoot();
+    assert(mountMode==selected && imuAcquisition.mode==selected && Preferences::data==stored);
+  }
   reset();restoreDisplayAtBoot();assert(!displayFlipped && M5.Display.rotation==2 && !prefs.writes);
   for(bool saved:{true,false}) {
     assert(DisplayFlipSetting::save(prefs,saved));const auto stored=Preferences::data;
@@ -172,14 +197,49 @@ int main(){
   edit(7);buttonB();buttonA();assert(appearance.sound==Appearance::Sound::Low && controls.page==Page::Settings);
   {Appearance::Config again;AppearanceStore<Appearance::Config> reread;assert(reread.begin(again,"controls-appearance","cfg0","cfg1") &&
     again.sound==Appearance::Sound::Low && again.theme==Appearance::Theme::Mint && again.effect==Appearance::Effect::Orbit);}
+  // Mount drafts never change live axes or flash. Apply waits until optical
+  // idle, resets live level, and preserves scalar history/session and Flip.
+  reset();assert(practice.accept(1,true,6000,millis()));const auto mountSession=practice.session()->number;
+  level.feed(.1f,0,1,millis());drawnLevel=level.reading(millis());lastLevelSampleUs=12345;
+  edit(8);assert(controls.draft==0);buttonB();
+  assert(controls.draft==1 && mountMode==MountOrientation::Mode::Top && !prefs.writes && !imuAcquisition.changes);
+  holdB();assert(mountMode==MountOrientation::Mode::Top && !prefs.writes && !imuAcquisition.changes);
+  edit(8);buttonB();acquisition.state.phase=AnalogTachometer::Phase::Launch;buttonA();
+  assert(controls.page==Page::Edit && settingsSaveError && !prefs.writes && !imuAcquisition.changes);
+  acquisition.state.phase=AnalogTachometer::Phase::Ready;motionPending=true;buttonA();
+  assert(controls.page==Page::Edit && settingsSaveError && !prefs.writes && !imuAcquisition.changes);
+  motionPending=false;buttonA();
+  assert(mountMode==MountOrientation::Mode::Sidecar && imuAcquisition.mode==mountMode && imuAcquisition.changes==1);
+  assert(controls.page==Page::Settings && !settingsSaveError && !displayFlipped && M5.Display.rotation==2);
+  assert(!level.reading(millis()).valid() && !drawnLevel.valid() && lastLevelSampleUs==0);
+  assert(practice.accept(2,true,6100,millis()) && practice.session()->number==mountSession && practice.size()==2);
+  MountOrientation::Mode mountSaved;assert(MountOrientationSetting::load(prefs,mountSaved) && mountSaved==mountMode);
+  const auto mountBytes=Preferences::data;const auto mountChanges=imuAcquisition.changes;
+  edit(8);buttonA();assert(Preferences::data==mountBytes && imuAcquisition.changes==mountChanges);
+  edit(8);buttonB();imuAcquisition.fail=true;buttonA();
+  assert(controls.page==Page::Edit && settingsSaveError && mountMode==MountOrientation::Mode::Sidecar);
+  assert(MountOrientationSetting::load(prefs,mountSaved) && mountSaved==mountMode);
+  imuAcquisition.fail=false;Preferences::failWrite=true;buttonA();
+  assert(controls.page==Page::Edit && settingsSaveError && imuAcquisition.changes==mountChanges);
+  Preferences::failWrite=false;buttonA();assert(mountMode==MountOrientation::Mode::Top && !settingsSaveError);
+  assert(acquisition.begins==acquisition.ends);
   reset();holdA();assert(tournamentMode && tournamentView==TournamentView::RecordingOnly);
   buttonA();holdB();assert(tournamentMode && !launchFeedback.shown());buttonB();assert(tournamentView==TournamentView::Rpm);
   holdA();assert(!tournamentMode && controls.page==Page::Main);
   reset();edit(3);buttonB();cancelSettingEdit();syncNavigation();assert(controls.page==Page::Settings && M5.Display.rotation==2 && !prefs.writes);
+  reset();controls.page=Page::Settings;controls.setting=unsigned(Controls::Setting::WipeAll);buttonA();
+  assert(controls.page==Page::Wipe && historyPage && wipeConfirmation.active() && !prefs.writes);
+  for(unsigned i=0;i<50;++i){buttonA();holdA();}
+  assert(wipeConfirmation.stage()==WipeConfirmation::Stage::Warning && !prefs.writes);
+  holdB();assert(controls.page==Page::Settings && !wipeConfirmation.active() && !prefs.writes);
+  buttonA();wipeConfirmation.tick(millis(),false,false);buttonA();
+  assert(wipeConfirmation.stage()==WipeConfirmation::Stage::Confirm);
+  buttonB();assert(controls.page==Page::Settings && !wipeConfirmation.active() && !prefs.writes);
+  buttonA();wipeBlocked=true;holdB();assert(controls.page==Page::Wipe && !wipeConfirmation.active());
   std::cout<<"PASS: actual control handlers; menu/back, recap, preview rollback, persistence retry, active-pull guard, metric/session boundary, rollback, sound preview/apply and tournament lock\n";
 }
 '''
-names=['syncNavigation','toggleFeedback','previewSetting','cancelSettingEdit','commitSetting','newSession','browseOlder','navigate','buttonA','buttonB','holdA','holdB']
+names=['syncNavigation','toggleFeedback','previewSetting','beginWipe','cancelWipe','cancelSettingEdit','commitSetting','newSession','browseOlder','navigate','buttonA','buttonB','holdA','holdB']
 with tempfile.TemporaryDirectory(prefix='launchlab-controls-') as directory:
     directory=Path(directory);cpp=directory/'test.cpp';exe=directory/'test'
     cpp.write_text(prefix+'\n'.join(function(name) for name in names)+tests)

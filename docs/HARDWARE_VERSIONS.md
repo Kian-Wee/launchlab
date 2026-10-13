@@ -9,15 +9,15 @@ Sensor, mount-family and firmware versions are independent.
 
 | Kit | Sensor | M5 mount pair | Firmware |
 | --- | --- | --- | --- |
-| Compact | Analog SparkFun QRE1113, sensor attachment v102 | Top Mount v2 cover and dock | Current 0.12.2, QRE / Standard profile |
-| Compact Sidecar | Analog SparkFun QRE1113, sensor attachment v102 | Sidecar v2 cover and base | Current 0.12.2, QRE / Standard profile |
-| Standard Sidecar | TCRT5000 / LM393 analog AO, sensor attachment v102 | Sidecar v2 cover and base | Current 0.12.2, TCRT5000 profile |
+| Compact | Analog SparkFun QRE1113, sensor attachment v102 | Top Mount v2 cover and dock | Current 0.13.5, QRE / Standard profile |
+| Compact Sidecar | Analog SparkFun QRE1113, sensor attachment v102 | Sidecar v2 cover and base | Current 0.13.5, QRE / Standard profile |
+| Standard Sidecar | TCRT5000 / LM393 analog AO, sensor attachment v102 | Sidecar v2 cover and base | Current 0.13.5, TCRT5000 profile |
 
 Sidecar describes a separate sensor attachment and M5 display attachment beside it.
 Top Mount holds the M5 above the QRE sensor base; no TCRT Top Mount kit is supplied.
-Firmware 0.12.2 is unchanged by this hardware update.
+Firmware 0.13.5 supports the current Top and Sidecar layouts.
 See [attribution](../THIRD_PARTY_NOTICES.md).
-Sidecar motion-axis normalization is planned for 0.13.1 and is not present in this publication.
+Choose **Settings → Mounting → Top or Sidecar** to match the physical layout; display flip is a separate setting.
 Saved CAD, STL readback and print-project audits passed; physical fit, retention, fatigue, optical alignment and absolute RPM calibration remain unverified for these current combinations.
 
 ## Current downloads

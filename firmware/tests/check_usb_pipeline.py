@@ -30,12 +30,14 @@ prefix=r'''
 #include "appearance_store.h"
 #include "power_diagnostics.h"
 #include "wake_ui_state.h"
+#include "controls.h"
 #include <cassert>
 #include <cstring>
 #include <iostream>
 #include <map>
 static Appearance::Config appearance;static Appearance::Bests personalBests;
 static AppearanceStore<Appearance::Bests> bestStore;static AppearanceStore<Appearance::Config> appearanceStore;static Appearance::Celebration bestEffect;
+static Controls::State controls;static bool wipeBlocked=false;
 static uint64_t clockUs=1000000;
 static uint32_t millis(){return uint32_t(clockUs/1000);}
 static int64_t wallUs(){return clockUs;}
@@ -70,6 +72,13 @@ struct M5Fake {
   struct DisplayFake {unsigned writes=0;void setBrightness(unsigned){++writes;}void sleep(){++writes;}void wakeup(){++writes;}} Display;
   struct PowerFake {PM1 M5pm1;unsigned writes=0;void setExtOutput(bool){++writes;}} Power;
 } M5;
+// Wake retry itself is fault-tested in test_pm1_idle/check_pm1_idle. Keep this
+// harness focused on host policy and exact standby ordering.
+struct IdleFake {
+  bool read(uint8_t reg,uint8_t *data,size_t size){return M5.Power.M5pm1.readRegister(reg,data,size);}
+  template<class F>bool run(F fn){return fn();}
+};
+static IdleFake &pm1Idle(){static IdleFake idle;return idle;}
 struct Settings {std::map<std::string,uint32_t> values;unsigned writes=0;
   size_t putUInt(const char *key,uint32_t value){++writes;values[key]=value;return 4;}
   bool remove(const char *key){return values.erase(key)>0;}
@@ -90,6 +99,7 @@ static bool saveWakeNavigation(){return true;}
 tests=r'''
 static void at(uint32_t now){clockUs=uint64_t(now)*1000;}
 static void reset(){
+  controls={};wipeBlocked=false;
   clockUs=1000000;hardwareSof=false;powerReadOk=mutexAvailable=true;powerSource=4;attachOnPowerSave=false;
   hostReads=powerReads=locks=unlocks=flashWrites=powerSaves=0;
   usbAwake=UsbHostAwake{};usbAutoOffInhibited=false;inactivity=InactivityTimer{};inactivity.setMinutes(1);inactivity.touch(millis());
@@ -105,6 +115,29 @@ static void off(){autoPowerOff(millis(),acquisition.snapshot());}
 static void confirmedHost(){hardwareSof=true;powerSource=5;poll(1000);poll(1250);assert(usbAwake.remembered());}
 static void assertNoStandby(){assert(!acquisition.begins && !shakeWake.arms && !shakeWake.sleeps && !prefs.writes && !M5.Display.writes && !M5.Power.writes && !powerSaves);}
 int main(){
+  // The connection monitor can remain optimistically positive for multiple
+  // polls. SOF alone must not promote a shake wake when checked VIN is absent.
+  reset();inactivity.begin(1000,true);hardwareSof=true;powerSource=4;
+  poll(1000);poll(1250);assert(usbAwake.remembered() && inactivity.unusedShake());
+  hardwareSof=false;poll(1500);
+  assert(inactivity.unusedShake() && inactivity.remaining(1500)==29500);
+  at(31000);off();assert(shakeWake.sleeps==1);
+  // A real host remains inhibited while a failed VIN read is uncertain, but
+  // promotion waits for verified input power and then restores normal timeout.
+  reset();inactivity.begin(1000,true);hardwareSof=true;powerReadOk=false;
+  poll(1000);poll(1250);assert(usbAwake.inhibited(1250) && inactivity.unusedShake());
+  powerReadOk=true;powerSource=5;poll(2000);assert(!inactivity.unusedShake());
+  hardwareSof=false;powerSource=4;poll(3000);
+  assert(!usbAwake.inhibited(3000) && inactivity.remaining(3000)==60000);
+  std::cout<<"PASS: multi-poll optimistic SOF with battery-only power preserves shake grace; verified VIN recovery promotes real USB use\n";
+  reset();inactivity.begin(1000,true);hardwareSof=true;powerSource=1;poll(1000);
+  assert(inactivity.unusedShake());hardwareSof=false;poll(1250);
+  assert(inactivity.unusedShake() && inactivity.remaining(1250)==29750);
+  at(31000);off();assert(shakeWake.sleeps==1);
+  reset();inactivity.begin(1000,true);confirmedHost();assert(!inactivity.unusedShake());
+  hardwareSof=false;powerSource=4;poll(2000);
+  assert(!usbAwake.inhibited(2000) && inactivity.remaining(2000)==60000);
+  std::cout<<"PASS: unconfirmed boot SOF preserves short shake grace; confirmed USB use and detach restore full selected timeout\n";
   reset();confirmedHost();const auto settings=prefs.values;
   for(uint32_t now=1500;now<=181000;now+=250){poll(now);off();}
   assertNoStandby();assert(prefs.values==settings && inactivity.minutes()==1);

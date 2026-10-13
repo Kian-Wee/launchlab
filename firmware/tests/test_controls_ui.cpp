@@ -36,18 +36,32 @@ int main() {
   using namespace Controls;unsigned renders=0;
   for(unsigned row=0;row<6;++row){lgfx::LGFXBase g;ControlsUI::list(g,"Menu",ControlsUI::MENU,6,row);assert(g.footers==1);++renders;}
   for(unsigned row=0;row<4;++row){lgfx::LGFXBase g;ControlsUI::list(g,"History",ControlsUI::HISTORY,4,row);assert(g.footers==1);++renders;}
-  uint8_t values[]={10,0,100,1,0,0,0,2};
+  uint8_t values[]={10,0,100,1,0,0,0,2,0};
   for(unsigned row=0;row<=SETTING_COUNT;++row){lgfx::LGFXBase g;State state;state.setting=row;ControlsUI::settings(g,state,values);assert(g.footers==1);++renders;}
   // Lowest and highest draft for each setting. A named array keeps the values
   // alive for the loop; a conditional initializer_list would dangle.
-  const unsigned extremes[][2]={{1,10},{0,1},{10,100},{0,1},{0,1},{0,Appearance::THEMES-1},{0,6},{0,2}};
-  static_assert(sizeof(extremes)/sizeof(extremes[0])>=SETTING_COUNT,"one range per setting");
-  for(unsigned row=0;row<SETTING_COUNT;++row)for(unsigned value:extremes[row]) {
+  const unsigned extremes[][2]={{1,10},{0,1},{10,100},{0,1},{0,1},{0,Appearance::THEMES-1},{0,6},{0,2},{0,1}};
+  static_assert(sizeof(extremes)/sizeof(extremes[0])>=EDITABLE_SETTING_COUNT,"one range per editable setting");
+  for(unsigned row=0;row<EDITABLE_SETTING_COUNT;++row)for(unsigned value:extremes[row]) {
     lgfx::LGFXBase g;State state;state.setting=row;state.draft=value;
     ControlsUI::editor(g,state,true,row==1 || row==4);
     assert(g.footers==1 && g.cycleHints==1);
     assert(g.valueEdges.size()==2 && g.valueEdges[0]>=8 && g.valueEdges[1]<=127);++renders;
   }
+  WipeConfirmation wipe;wipe.begin(1000);
+  for(unsigned stage=0;stage<3;++stage) {
+    wipe.tick(1001+stage,false,false);
+    for(bool failed:{false,true})for(bool blocked:{false,true}) {
+      lgfx::LGFXBase g;ControlsUI::wipe(g,wipe,1001+stage,failed,blocked,false);assert(g.footers==1);++renders;
+    }
+    if(stage<2)assert(wipe.confirm(1001+stage));
+  }
+  wipe.tick(1010,false,false);wipe.tick(1011,true,false);
+  for(unsigned ms=1012;ms<4011;ms+=100) {
+    assert(!wipe.tick(ms,true,false));lgfx::LGFXBase g;ControlsUI::wipe(g,wipe,ms,false,false,false);assert(g.footers==1);++renders;
+  }
+  wipe.cancel();
+  for(bool complete:{false,true}){lgfx::LGFXBase g;ControlsUI::wipe(g,wipe,5000,true,true,complete);assert(g.footers==1);++renders;}
   // Every named palette value stays visible in its Settings row and editor.
   for(unsigned theme=0;theme<Appearance::THEMES;++theme) {
     State state;state.setting=unsigned(Setting::Theme);state.draft=theme;values[state.setting]=theme;

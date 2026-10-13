@@ -737,5 +737,19 @@
     "binary": "LaunchLabMini.ino.bin",
     "binary_bytes": 808144,
     "sha256": "9548c322ae1f7383641e62ec5b81f7a2f54777c05034f8c5aac47a40b4f25b49"
+  },
+  {
+    "release": "0.13.5-sticks3-idle-adc-pm",
+    "runtime_version": "0.13.5-sticks3-idle-adc-pm",
+    "board": "M5StickS3 K150",
+    "date": "2026-10-13",
+    "binary": "LaunchLabMini.ino.bin",
+    "binary_bytes": 827952,
+    "sha256": "0203763a133de42bf09dd3c5a93a6cbe074c974e815d8d5aff6d2541f6a88edf",
+    "application_offset": "0x10000",
+    "profiles": [
+      "qre1113",
+      "tcrt5000"
+    ]
   }
 ]

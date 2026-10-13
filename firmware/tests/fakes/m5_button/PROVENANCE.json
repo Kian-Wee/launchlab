@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "upstream": "https://github.com/m5stack/M5Unified",
+  "source_commit": "8b63555e7bd9ac71978c55ad868fd1d1d3b2ef3e",
+  "library_version": "0.2.23",
+  "scope": "Unchanged real debounced button implementation used by the actual wipe integration test; no M5 hardware initialization.",
+  "license": "MIT, exact upstream LICENSE retained",
+  "files": [
+    {
+      "file": "Button_Class.hpp",
+      "upstream_path": "src/utility/Button_Class.hpp",
+      "sha256": "9bb5b2b35c74510cbbadd943b337deb814b81f894cfb3cc039bdf5ef14493a2d"
+    },
+    {
+      "file": "Button_Class.inl",
+      "upstream_path": "src/utility/Button_Class.inl",
+      "sha256": "013f532e72067dc9350785c59110bb4f9cf635363434d58c71d075406d72b335"
+    },
+    {
+      "file": "LICENSE",
+      "upstream_path": "LICENSE",
+      "sha256": "44611d917bece311f5c8eeffce83d8bf9e9ca3f815d262f694ff4a7996af50ea"
+    }
+  ],
+  "fixture_directory": "firmware/tests/fakes/m5_button"
+}

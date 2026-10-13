@@ -108,6 +108,8 @@ inline void recordLevels(Trace &t);
 class Ring {
 public:
   static constexpr unsigned CAPACITY=1024;
+  // Discard pre-roll across a mounting change without a large stack temporary.
+  void clear(){next_=count_=0;}
   void feed(const Sample &s) {
     if(count_ && s.us<=at(count_-1).us)return;
     samples_[next_]=s;next_=(next_+1)%CAPACITY;if(count_<CAPACITY)++count_;

@@ -6,6 +6,11 @@
 #include "practice_store.h"
 #include "practice_ui.h"
 #include "power_status.h"
+#include "sensor_idle.h"
+#include "cpu_power.h"
+#ifndef LAUNCHLAB_MOTION_ADC_GATE
+#define LAUNCHLAB_MOTION_ADC_GATE 0
+#endif
 #include "usb_awake.h"
 #include <HWCDC.h>
 #include "power_diagnostics.h"
@@ -20,6 +25,7 @@
 #include "display_flip_setting.h"
 #include "display_orientation.h"
 #include "sensor_profile_setting.h"
+#include "mount_orientation_setting.h"
 #include "controls_ui.h"
 #include "motion_acquisition.h"
 #include "motion_store.h"
@@ -30,19 +36,26 @@
 #include "best_effect_speaker.h"
 #include "device_backup.h"
 #include "nvs_budget.h"
+#include "device_wipe_nvs.h"
+#include "wipe_confirmation.h"
 
 // loop() runs on an 8 KB task. GCC inlines static helpers called once, and the
 // frames of inlined bodies add up: 0.11.0's loop frame reached 6.9 KB and
 // overflowed on the first status print. Keep heavy or rarely used helpers as
 // real calls so each one uses stack only while it runs.
 #define LOOP_HELPER __attribute__((noinline))
-static constexpr char VERSION[] = "0.12.2-sticks3-flip-colors";
+#if LAUNCHLAB_CPU_PM
+static constexpr char VERSION[] = "0.13.5-sticks3-idle-adc-pm";
+#else
+static constexpr char VERSION[] = "0.13.5-sticks3-idle-adc";
+#endif
 static_assert(sizeof(VERSION)<=DeviceBackup::RUNTIME_BYTES,"Runtime must fit the USB backup header");
 #ifndef LAUNCHLAB_CPU_MHZ
 #define LAUNCHLAB_CPU_MHZ 80
 #endif
 static_assert(LAUNCHLAB_CPU_MHZ==80 || LAUNCHLAB_CPU_MHZ==160 || LAUNCHLAB_CPU_MHZ==240,
   "CPU policy must retain the 80 MHz peripheral clock");
+static_assert(!LAUNCHLAB_CPU_PM || LAUNCHLAB_CPU_MHZ==80,"Experimental DFS uses a maximum of 80 MHz");
 static constexpr uint32_t ANALOG_SAMPLE_HZ = StickS3Acquisition::SAMPLE_HZ;
 #include "raw_transfer.h"
 static StickS3Acquisition acquisition;
@@ -69,6 +82,9 @@ enum class TournamentView:uint8_t { RecordingOnly, Rpm };
 static TournamentView tournamentView=TournamentView::RecordingOnly;
 static Controls::State controls;
 static Controls::Gesture gestureA,gestureB;
+static WipeConfirmation wipeConfirmation;
+static bool wipeFailed=false,wipeBlocked=false,wipeComplete=false;
+static bool wipeCheckpointHeld=false,wipeBootRecovery=false,wipeRestartRequested=false;
 static bool restorePreview=false;
 static uint32_t tournamentHintUntil=0;
 
@@ -83,6 +99,8 @@ static uint32_t lastDraw=0,lastStatus=0,lastRevision=0,maxDrawUs=0,maxEffectUs=0
 static uint32_t lastImuPoll=0,maxImuPollUs=0;
 static StickS3Level::Reading drawnLevel;
 static InactivityTimer inactivity;
+static uint64_t lastActivityMotionUs=0;
+static SensorIdle sensorIdle;
 static UsbHostAwake usbAwake;
 static bool usbAutoOffInhibited=false;
 static StickS3ShakeWake shakeWake;
@@ -91,6 +109,7 @@ static uint8_t brightnessPercent=40;
 static bool displayFlipped=false;
 static RpmEstimator::Mode rpmEstimator=RpmEstimator::DEFAULT_MODE;
 static StickS3SensorProfile::Mode sensorProfile=StickS3SensorProfile::DEFAULT_MODE;
+static MountOrientation::Mode mountMode=MountOrientation::Mode::Top;
 static StickS3Battery battery;
 static uint32_t lastBatteryPoll=0,maxBatteryPollUs=0,lastShutdownTry=0;
 static bool batteryPolled=false;
@@ -158,7 +177,7 @@ static bool startMotion() {
     const bool detected=M5.Imu.begin(&M5.In_I2C,m5::board_t::board_M5StickS3);
     motionInitPaired=detected && motionSensorPaired();
   }
-  motionInitSuccess=motionInitPaired && imuAcquisition.begin();
+  motionInitSuccess=motionInitPaired && imuAcquisition.setMount(mountMode) && imuAcquisition.begin();
   Serial.printf("IMU_STARTUP attempt=%lu enabled=%d type=%d paired=%d task=%d elapsed_ms=%lu\n",
     (unsigned long)motionInitAttempts,M5.Imu.isEnabled(),int(M5.Imu.getType()),motionInitPaired,
     imuAcquisition.running(),(unsigned long)(millis()-lastMotionInit));
@@ -178,13 +197,15 @@ static bool visibleDisplayFlipped(){return DisplayOrientation::flipForRotation(M
 static Appearance::Theme visibleTheme(){return controls.page==Controls::Page::Edit && controls.setting==5?Appearance::Theme(controls.draft):appearance.theme;}
 static uint16_t themeAccent(){return Appearance::accent(visibleTheme());}
 static void cancelSettingEdit();
+static void beginWipe();
+static void cancelWipe();
 static bool saveWakeNavigation(){return prefs.putUInt("wake_nav",Controls::encodeWake(controls,uint8_t(tournamentView)))==sizeof(uint32_t);}
 static void syncNavigation() {
   tournamentMode=controls.page==Controls::Page::Tournament;
   historyPage=controls.page!=Controls::Page::Main && !tournamentMode;
   if(controls.page==Controls::Page::History)historyView=PracticeUI::View(controls.history);
   else if(controls.page==Controls::Page::Battery)historyView=PracticeUI::View::Battery;
-  else if(controls.page==Controls::Page::Settings || controls.page==Controls::Page::Edit)historyView=PracticeUI::View::Settings;
+  else if(controls.page==Controls::Page::Settings || controls.page==Controls::Page::Edit || controls.page==Controls::Page::Wipe)historyView=PracticeUI::View::Settings;
   dirty=true;
 }
 static int64_t wallUs(){timeval t;gettimeofday(&t,nullptr);return int64_t(t.tv_sec)*1000000+t.tv_usec;}
@@ -214,7 +235,9 @@ LOOP_HELPER static void exportPowerLog(){
 LOOP_HELPER static void tickPowerLog(uint32_t now,const Snapshot &s){
   PowerDiagnostics::account(powerLog,now-powerLogTick,powerFlags(),M5.Display.getBrightness());powerLogTick=now;
   if(now-lastPowerSample>=60000){lastPowerSample=now;powerRecord(PowerDiagnostics::Sample);}
-  if(powerLogReady && powerLogDirty && now-lastPowerSaveTry>=300000 &&
+  // A resting owner already holds its checkpoint. Keep optional diagnostics
+  // in RAM until motion resumes it or final shutdown flushes the log.
+  if(!s.resting && powerLogReady && powerLogDirty && now-lastPowerSaveTry>=300000 &&
     HistoryCheckpoint::practiceIdle(now,lastAcceptedAt,HISTORY_COALESCE_MS,motionPending,launchFeedback.shown(),s.phase)
     && acquisition.request(Action::IdleCheckpointBegin,s.launches)){
     if(!savePowerLog())Serial.println("POWER_LOG_NOTICE checkpoint_failed");acquisition.request(Action::CheckpointEnd);
@@ -277,8 +300,9 @@ LOOP_HELPER static void status() {
     (unsigned long)s.singlePeakUpdates,(unsigned long)s.singlePeakRejected);
   Serial.printf("TOURNAMENT_STATUS enabled=%d display=%s persistent=wake\n",tournamentMode,tournamentViewName());
   soundPlayer.status(appearance.sound);
-  Serial.printf("UI_STATUS page=%u menu=%u history=%u setting=%u draft=%u recording=always\n",
-    unsigned(controls.page),controls.menu,controls.history,controls.setting,controls.draft);
+  Serial.printf("UI_STATUS page=%u menu=%u history=%u setting=%u draft=%u recording=%s\n",
+    unsigned(controls.page),controls.menu,controls.history,controls.setting,controls.draft,
+    s.resting?"idle_paused":LAUNCHLAB_MOTION_ADC_GATE?"motion_gated":"always");
   Serial.printf("PERF acquisition_core=0 ui_core=%d processing_pct=%.2f max_batch_us=%lu frame_budget_us=5120 max_read_gap_us=%lu stack_free=%lu invalid_frames=%lu lost_events=%lu max_draw_us=%lu max_effect_us=%lu ui_stalls=%lu stress=%d heap_free=%lu psram_free=%lu\n",
     xPortGetCoreID(),s.processingPercent,(unsigned long)s.maxBatchUs,(unsigned long)s.maxReadGapUs,
     (unsigned long)s.stackFree,(unsigned long)s.invalidFrames,(unsigned long)s.lostEvents,
@@ -316,7 +340,32 @@ LOOP_HELPER static void status() {
   Serial.printf("POWER_DETAIL uptime_s=%lu cpu_mhz=%lu backlight=%u pm1_cfg_valid=%d pm1_cfg=0x%02x led_enabled=%d current_measurement=unavailable\n",
     (unsigned long)(now/1000),(unsigned long)ESP.getCpuFreqMHz(),unsigned(M5.Display.getBrightness()),
     powerConfigValid,powerConfig,powerConfigValid?int(bool(powerConfig&0x10)):-1);
+  Serial.printf("CPU_PM requested=%d enabled=%d min_mhz=%u max_mhz=80 light_sleep=0 error=%s\n",
+    LAUNCHLAB_CPU_PM,CpuPower::active(),CpuPower::active()?40u:80u,CpuPower::errorName());
+  Serial.printf("POWER_POLICY effective_timeout_s=%lu unused_shake=%d dim_after_ms=%lu level_poll_ms=%lu ui_poll_ms=%lu battery_estimate_mv=%u battery_estimate=voltage_median5\n",
+    (unsigned long)(inactivity.activeTimeout()/1000),inactivity.unusedShake(),
+    (unsigned long)IdlePowerPolicy::DIM_MS,(unsigned long)IdlePowerPolicy::LEVEL_POLL_MS,
+    (unsigned long)IdlePowerPolicy::UI_POLL_MS,unsigned(battery.estimateMillivolts));
+  // PM1 statistics are written under the shared gate. Do not block status
+  // waiting on the IMU owner or sample them concurrently with a PM1 operation.
+  if(imuAcquisition.lock()) {
+    const auto pm=pm1Idle().stats();imuAcquisition.unlock();
+    Serial.printf("PM1_IDLE_STATUS configured=%d seconds=%u fallback_verified=%d wake_retries=%lu recovered_reads=%lu read_failures=%lu write_failures=%lu operation_failures=%lu config_failures=%lu\n",
+      pm.configured,unsigned(pm.seconds),pm.fallbackVerified,(unsigned long)pm.wakeRetries,
+      (unsigned long)pm.recoveredReads,(unsigned long)pm.readFailures,(unsigned long)pm.writeFailures,
+      (unsigned long)pm.operationFailures,(unsigned long)pm.configFailures);
+  }
   const auto imu=imuAcquisition.snapshot();
+  const auto &activity=imu.activity;
+  Serial.printf("SENSOR_IDLE enabled=%d resting=%d sensor_power=on_shared_rail adc_pause_after_ms=%lu pauses=%lu resumes=%lu experimental=1\n",
+    LAUNCHLAB_MOTION_ADC_GATE,s.resting,(unsigned long)SensorIdle::IDLE_MS,
+    (unsigned long)sensorIdle.pauses(),(unsigned long)sensorIdle.resumes());
+  Serial.printf("MOTION_ACTIVITY valid=%d fresh=%d moving=%d gyro_dps=%.3f accel_change_g=%.4f gyro_on_dps=%.2f accel_on_g=%.3f confirm_ms=%lu idle_ms=%lu unused_shake=%d off_in_s=%lu\n",
+    activity.valid,activity.fresh(esp_timer_get_time()),activity.moving,activity.gyroDps,activity.accelChangeG,
+    MotionActivity::GYRO_ON,MotionActivity::ACCEL_ON,(unsigned long)(MotionActivity::CONFIRM_US/1000),
+    (unsigned long)inactivity.elapsed(now),inactivity.unusedShake(),(unsigned long)((inactivity.remaining(now)+999)/1000));
+  Serial.printf("MOUNT_STATUS selected=%s imu_frame=%s accel_gyro_frame=launcher raw_imu_frame=device display_flip=%d\n",
+    MountOrientation::label(mountMode),MountOrientation::label(imu.mount),displayFlipped);
   Serial.printf("IMU_STARTUP_STATUS attempts=%lu last_try_ms=%lu last_paired=%d last_success=%d retry_ms=%lu\n",
     (unsigned long)motionInitAttempts,(unsigned long)lastMotionInit,motionInitPaired,motionInitSuccess,
     (unsigned long)MOTION_INIT_RETRY_MS);
@@ -339,17 +388,24 @@ LOOP_HELPER static void pollUsbAwake(uint32_t now,const Snapshot &s,bool force=f
     uint8_t source=0;bool ok=false;
     if(imuAcquisition.lock()) {
       // Checked PWR_SRC read: wrappers that return zero also hide I2C errors.
-      ok=M5.Power.M5pm1.readRegister(0x04,&source,1);
+      ok=pm1Idle().read(0x04,&source,1);
       imuAcquisition.unlock();
     }
     usbAwake.samplePower(now,ok,source);
   }
   const bool inhibited=usbAwake.inhibited(now);
+  // A confirmed computer connection establishes use, even if the initial
+  // optimistic SOF already inhibited shutdown on the preceding poll.
+  if(inhibited && usbAwake.remembered() && usbAwake.powerKnown(now) &&
+     (usbAwake.powerBits()&UsbHostAwake::VIN_MASK) && inactivity.unusedShake())inactivity.touch(now);
   if(inhibited!=usbAutoOffInhibited) {
     usbAutoOffInhibited=inhibited;
     // A disconnect starts a full ordinary battery timeout, not an overdue
     // timer accumulated during a long computer session. Touch only on edges.
-    inactivity.touch(now);lastShutdownTry=0;
+    // A transient, unconfirmed boot SOF must not turn an accidental shake
+    // wake into a full practice timeout. Confirmed detach was promoted above.
+    if(!inactivity.unusedShake())inactivity.touch(now);
+    lastShutdownTry=0;
     Serial.printf("USB_AUTO_OFF inhibited=%d reason=%s sof=%d host_seen=%d power_known=%d source=0x%02x\n",
       inhibited,usbAwake.reason(now),usbAwake.sof(),usbAwake.remembered(),usbAwake.powerKnown(now),usbAwake.powerBits());
   }
@@ -361,13 +417,32 @@ LOOP_HELPER static void pollBattery(uint32_t now,const Snapshot &s) {
   batteryPolled=true;lastBatteryPoll=now;
   const int64_t started=esp_timer_get_time();
   uint16_t mv=0;uint8_t bits=0;
-  const bool voltageRead=M5.Power.M5pm1.getBatteryVoltage(&mv);
-  const bool chargeRead=M5.Power.M5pm1.getGPIOInputBits(&bits);
-  powerConfigValid=M5.Power.M5pm1.readRegister(0x06,&powerConfig,1);
+  bool voltageRead=false,chargeRead=false;
+  if(pm1Idle().ensureAwake()) {
+    voltageRead=M5.Power.M5pm1.getBatteryVoltage(&mv);
+    chargeRead=M5.Power.M5pm1.getGPIOInputBits(&bits);
+  }
+  powerConfigValid=pm1Idle().read(0x06,&powerConfig,1);
   imuAcquisition.unlock();
   battery.update(mv,voltageRead,chargeRead,bits,now);
   maxBatteryPollUs=std::max(maxBatteryPollUs,uint32_t(esp_timer_get_time()-started));
   if(historyPage && historyView==PracticeUI::View::Battery)dirty=true;
+}
+
+LOOP_HELPER static void tickDisplayPower(uint32_t now,const Snapshot &s) {
+  // Preserve the electrical conditions during a measured pull. A pull while
+  // dimmed restores its feedback brightness only after measurement completes.
+  if(s.phase==AnalogTachometer::Phase::Launch ||
+     (s.phase==AnalogTachometer::Phase::Ready && !s.opticalIdle))return;
+  const uint8_t selected=controls.page==Controls::Page::Edit && controls.setting==2?
+    controls.draft:brightnessPercent;
+  const uint8_t percent=IdlePowerPolicy::brightness(selected,inactivity.elapsed(now),
+    usbAwake.inhibited(now),launchFeedback.shown());
+  const uint8_t target=(unsigned(percent)*255+50)/100;
+  if(M5.Display.getBrightness()==target)return;
+  acquisition.displayBoundary(true);M5.Display.setBrightness(target);acquisition.displayBoundary(false);
+  Serial.printf("DISPLAY_POWER selected_pct=%u actual_pct=%u idle_ms=%lu dimmed=%d\n",
+    selected,percent,(unsigned long)inactivity.elapsed(now),percent<selected);
 }
 
 static void drawBattery(lgfx::LGFXBase &g,uint32_t now) {
@@ -390,7 +465,7 @@ static void drawBattery(lgfx::LGFXBase &g,uint32_t now) {
 }
 
 static void drawSettings(lgfx::LGFXBase &g) {
-  const uint8_t values[]={inactivity.minutes(),uint8_t(rpmEstimator),brightnessPercent,uint8_t(displayFlipped),uint8_t(sensorProfile),uint8_t(appearance.theme),uint8_t(appearance.effect),uint8_t(appearance.sound)};
+  const uint8_t values[]={inactivity.minutes(),uint8_t(rpmEstimator),brightnessPercent,uint8_t(displayFlipped),uint8_t(sensorProfile),uint8_t(appearance.theme),uint8_t(appearance.effect),uint8_t(appearance.sound),uint8_t(mountMode)};
   ControlsUI::settings(g,controls,values);
 }
 
@@ -491,6 +566,7 @@ LOOP_HELPER static void draw(const Snapshot &s) {
         break;
       case Controls::Page::NewSession:ControlsUI::session(view,controls.startSession);break;
       case Controls::Page::Battery:drawBattery(view,millis());break;
+      case Controls::Page::Wipe:ControlsUI::wipe(view,wipeConfirmation,millis(),wipeFailed,wipeBlocked,wipeComplete);break;
       default:PracticeUI::draw(view,demo?demoPractice:practice,historyView,historyOffset,demo,themeAccent());break;
     }
   } else if(launchFeedback.shown()) {
@@ -557,8 +633,17 @@ LOOP_HELPER static void draw(const Snapshot &s) {
 }
 
 LOOP_HELPER static void pollLevel(uint32_t now) {
+  // Fusion remains continuous on its own task. The UI needs fresh level data
+  // only at 50 Hz, rather than copying the full snapshot on every loop pass.
+  if(now-lastImuPoll<IdlePowerPolicy::LEVEL_POLL_MS)return;
+  lastImuPoll=now;
   if(imuAcquisition.running()) {
     const auto sample=imuAcquisition.snapshot();
+    const uint64_t clockUs=esp_timer_get_time();
+    if(sample.activity.fresh(clockUs) && sample.activity.lastMotionUs>lastActivityMotionUs &&
+       clockUs>=sample.activity.lastMotionUs && clockUs-sample.activity.lastMotionUs<=MotionActivity::FRESH_US) {
+      lastActivityMotionUs=sample.activity.lastMotionUs;inactivity.motion(now);
+    }
     if(sample.fusedUs && sample.fusedUs!=lastLevelSampleUs) {
       lastLevelSampleUs=sample.fusedUs;
       if(sample.orientationReady)level.feed(sample.gravity[0],sample.gravity[1],sample.gravity[2],uint32_t(sample.fusedUs/1000));
@@ -566,12 +651,14 @@ LOOP_HELPER static void pollLevel(uint32_t now) {
     }
     return;
   }
-  if(!M5.Imu.isEnabled() || now-lastImuPoll<20)return;
-  lastImuPoll=now;const int64_t started=esp_timer_get_time();
+  if(!M5.Imu.isEnabled())return;
+  const int64_t started=esp_timer_get_time();
   // update's returned accel bit establishes freshness; cached data is not a new sample.
   if(M5.Imu.update() & m5::IMU_Class::sensor_mask_accel) {
     const auto data=M5.Imu.getImuData();
-    level.feed(data.accel.x,data.accel.y,data.accel.z,millis());
+    const float native[3]={data.accel.x,data.accel.y,data.accel.z};float mapped[3];
+    MountOrientation::mapVector(mountMode,native,mapped);
+    level.feed(mapped[0],mapped[1],mapped[2],millis());
   }
   maxImuPollUs=std::max(maxImuPollUs,uint32_t(esp_timer_get_time()-started));
 }
@@ -714,6 +801,7 @@ LOOP_HELPER static void previewEffect() {
   editorEffect.queue(true,1,lastShown);editorEffect.captured(1);
 }
 static void cancelSettingEdit() {
+  if(controls.page==Controls::Page::Wipe)cancelWipe();
   if(controls.page==Controls::Page::Edit)controls.page=Controls::Page::Settings;
   restorePreview=true;settingsSaveError=false;previewSetting();
 }
@@ -758,6 +846,20 @@ static void commitSetting() {
       if(saved && next!=sensorProfile){sensorProfile=next;practice.newSession();launchFeedback.clear();}
       break;
     }
+    case Controls::Setting::Mount: {
+      if(!MountOrientation::valid(value))break;
+      const auto next=MountOrientation::Mode(value);
+      saved=next==mountMode || MountOrientationSetting::save(prefs,next);
+      if(next!=mountMode && (!saved || !imuAcquisition.setMount(next))) {
+        saved=false;
+        if(!MountOrientationSetting::save(prefs,mountMode))Serial.println("MOUNT_SETTING_ERROR preference_rollback_failed");
+      }
+      if(saved && next!=mountMode) {
+        mountMode=next;level=StickS3Level{};drawnLevel={};lastLevelSampleUs=0;
+        launchFeedback.clear();
+      }
+      break;
+    }
     case Controls::Setting::Theme:case Controls::Setting::BestEffect:case Controls::Setting::Sound: {
       auto next=appearance;
       if(!next.select(controls.setting==5?Appearance::Theme(value):appearance.theme,
@@ -766,6 +868,7 @@ static void commitSetting() {
       saved=appearanceStore.save(next);if(saved)appearance=next;
       break;
     }
+    case Controls::Setting::WipeAll:break; // Erasure never uses Apply or draft values.
   }
   settingsSaveError=!saved;
   if(saved){controls.page=Controls::Page::Settings;restorePreview=true;previewSetting();}
@@ -786,6 +889,7 @@ static void browseOlder() {
   historyOffset=historyOffset+step<total?historyOffset+step:0;dirty=true;
 }
 static void navigate(Controls::Effect effect,Controls::Page previous) {
+  if(previous==Controls::Page::Wipe && controls.page!=previous)wipeConfirmation.cancel();
   if(previous!=controls.page || effect==Controls::Effect::Recap || effect==Controls::Effect::Tournament)bestEffect.clear();
   if(previous==Controls::Page::Main && controls.page!=previous)launchFeedback.clear();
   if(previous!=controls.page){diagnostics=false;motionDemo=false;demo=false;historyOffset=0;}
@@ -795,7 +899,8 @@ static void navigate(Controls::Effect effect,Controls::Page previous) {
       settingsSaveError=false;
       controls.draft=controls.setting==0?inactivity.minutes():controls.setting==1?uint8_t(rpmEstimator):controls.setting==2?brightnessPercent:
         controls.setting==3?uint8_t(displayFlipped):controls.setting==4?uint8_t(sensorProfile):
-        controls.setting==5?uint8_t(appearance.theme):controls.setting==6?uint8_t(appearance.effect):uint8_t(appearance.sound);
+        controls.setting==5?uint8_t(appearance.theme):controls.setting==6?uint8_t(appearance.effect):
+        controls.setting==7?uint8_t(appearance.sound):uint8_t(mountMode);
       if(controls.setting==6)previewEffect();
       break;
     case Controls::Effect::Preview:settingsSaveError=false;previewSetting();
@@ -813,6 +918,9 @@ static void navigate(Controls::Effect effect,Controls::Page previous) {
       launchFeedback.clear();tournamentHintUntil=millis()+2500;
       Serial.printf("TOURNAMENT_CHANGE enabled=%d display=%s\n",controls.page==Controls::Page::Tournament,tournamentViewName());
       break;
+    case Controls::Effect::BeginWipe:beginWipe();break;
+    case Controls::Effect::ConfirmWipe:if(wipeConfirmation.confirm(millis()))dirty=true;break;
+    case Controls::Effect::CancelWipe:cancelWipe();break;
     case Controls::Effect::None:break;
   }
   syncNavigation();
@@ -821,6 +929,88 @@ static void buttonA(){const auto p=controls.page;const auto e=controls.tapA();na
 static void buttonB(){const auto p=controls.page;const auto e=controls.tapB();navigate(e,p);}
 LOOP_HELPER static void holdA(){const auto p=controls.page;const auto e=controls.holdA(launchFeedback.shown());navigate(e,p);}
 LOOP_HELPER static void holdB(){const auto p=controls.page;const auto e=controls.holdB(launchFeedback.shown());navigate(e,p);}
+static void beginWipe() {
+  restoreRx.cancel();
+  wipeFailed=false;wipeConfirmation.begin(millis());
+  controls.page=Controls::Page::Wipe;controls.setting=unsigned(Controls::Setting::WipeAll);
+  gestureA.consumed=gestureB.consumed=true;
+  syncNavigation();
+}
+static void cancelWipe() {
+  wipeConfirmation.cancel();
+  // After an erase attempt, old RAM must never be saved back into storage.
+  controls.page=wipeBlocked?Controls::Page::Wipe:Controls::Page::Settings;
+  controls.setting=unsigned(Controls::Setting::WipeAll);
+  gestureA.consumed=gestureB.consumed=true;
+  syncNavigation();
+}
+LOOP_HELPER static void restartAfterWipe() {
+  if(wipeRestartRequested)return;
+  wipeRestartRequested=true;sleepReceipt.magic=0;
+  Serial.println("WIPE_RESTART");Serial.flush();delay(150);ESP.restart();
+}
+LOOP_HELPER static void commitWipe(const Snapshot &s) {
+  // Only pollWipe's fresh physical three-second hold calls this function.
+  // An active capture or newly started optical burst cannot cross the erase.
+  if(!wipeCheckpointHeld && !wipeBootRecovery) {
+    if(motionPending || !acquisition.request(Action::IdleCheckpointBegin,s.launches)) {
+      wipeFailed=true;wipeConfirmation.begin(millis());dirty=true;
+      Serial.println("WIPE_DEFERRED wait_until_idle");return;
+    }
+    wipeCheckpointHeld=true;
+  }
+  wipeBlocked=true; // Set before the first write; retained on every failure.
+  soundPlayer.stop();soundRequest={};celebrationSound=soundPreview=false;
+  bestEffect.clear();editorEffect.clear();launchFeedback.clear();
+  restoreRx.cancel();
+  DeviceWipe::NvsStore store;
+  wipeComplete=DeviceWipe::begin(store)==DeviceWipe::Result::Complete;
+  wipeFailed=!wipeComplete;wipeConfirmation.cancel();dirty=true;
+  Serial.println(wipeComplete?"WIPE_OK release_buttons_to_restart":"WIPE_ERROR retry_or_restart_no_normal_saves");
+  // Keep the ADC checkpoint held. Success restarts on button release; a
+  // partial wipe may only retry/reboot, never resume ordinary RAM saves.
+}
+LOOP_HELPER static void pollWipe(uint32_t now,bool buttonsFresh,const Snapshot &s) {
+  if(controls.page!=Controls::Page::Wipe)return;
+  const bool aDown=M5.BtnA.isPressed(),bDown=M5.BtnB.isPressed();
+  if(wipeComplete) {
+    if(buttonsFresh && !aDown && !bDown)restartAfterWipe();
+    return;
+  }
+  const bool clickedA=buttonsFresh && gestureA.click(M5.BtnA.wasPressed(),M5.BtnA.wasHold(),M5.BtnA.wasClicked());
+  const bool clickedB=buttonsFresh && gestureB.click(M5.BtnB.wasPressed(),M5.BtnB.wasHold(),M5.BtnB.wasClicked());
+  // Launches defer screen redraws. Do not accept an unseen warning or count a
+  // hold while the display is frozen; require a new press after measurement.
+  const bool measuring=s.phase==AnalogTachometer::Phase::Launch;
+  if(measuring)gestureA.consumed=true;
+  const bool wasConfirming=wipeConfirmation.active();
+  if(wipeConfirmation.tick(now,aDown,bDown,buttonsFresh && !measuring)) {commitWipe(s);return;}
+  if(!wipeConfirmation.active()) {
+    if(wasConfirming){cancelWipe();return;}
+    if(!wipeBlocked){cancelWipe();return;}
+    if(clickedA)beginWipe();
+    else if(clickedB)restartAfterWipe();
+    return;
+  }
+  if(clickedA && !measuring)buttonA();
+  else if(clickedB)cancelWipe();
+  if(now-lastDraw>=50)dirty=true;
+}
+LOOP_HELPER static bool recoverWipe() {
+  DeviceWipe::NvsStore store;
+  const auto state=DeviceWipe::inspect(store);
+  if(state==DeviceWipe::State::Clean)return true;
+  if(state==DeviceWipe::State::Pending && DeviceWipe::resume(store)==DeviceWipe::Result::Complete) {
+    sleepReceipt.magic=0;Serial.println("WIPE_BOOT completed_pending_erase");return true;
+  }
+  // No old settings/history are loaded and no acquisition task is started.
+  // An invalid marker is not permission to erase; the physical flow must run.
+  wipeBlocked=wipeBootRecovery=wipeFailed=true;
+  controls.page=Controls::Page::Wipe;controls.setting=unsigned(Controls::Setting::WipeAll);
+  M5.Display.setRotation(DisplayOrientation::rotation(false));M5.Display.setBrightness(102);M5.Display.setTextSize(1);
+  M5.BtnA.setHoldThresh(1000);M5.BtnB.setHoldThresh(1000);
+  syncNavigation();Serial.println("WIPE_BOOT_ERROR normal_load_and_saves_blocked");return false;
+}
 LOOP_HELPER static void previewHistory() {
   bestEffect.clear();
   demo=!demo;diagnostics=false;historyPage=demo;historyView=PracticeUI::View::Recent;historyOffset=0;
@@ -874,6 +1064,7 @@ LOOP_HELPER static void saveHistory(uint32_t now,const Snapshot &s) {
 }
 
 LOOP_HELPER static void autoPowerOff(uint32_t now,const Snapshot &s) {
+  if(wipeBlocked || controls.page==Controls::Page::Wipe)return;
   if(usbAwake.inhibited(now))return;
   if(motionPending || !inactivity.due(now,s.phase==AnalogTachometer::Phase::Launch) ||
      (lastShutdownTry && now-lastShutdownTry<60000))return;
@@ -952,7 +1143,9 @@ LOOP_HELPER static void autoPowerOff(uint32_t now,const Snapshot &s) {
       }
     }
     const bool restored=shakeWake.restore();
-    M5.Power.setExtOutput(extPower);imuAcquisition.unlock();
+    const bool extRestored=pm1Idle().run([](){M5.Power.setExtOutput(extPower);return true;});
+    imuAcquisition.unlock();
+    if(!extRestored)Serial.println("EXT_POWER_NOTICE restore_wake_failed");
     Serial.printf("POWER_OFF_DEFERRED reason=%s restored=%d retry_s=%u\n",usbCancelled?"usb_host_attached":"shake_sleep_failed",restored,usbCancelled?0:60);
   } else Serial.println("POWER_OFF_DEFERRED imu_bus_busy");
   if(!acquisition.request(Action::CheckpointEnd))acquisition.request(Action::Pin,s.pin);
@@ -967,7 +1160,7 @@ LOOP_HELPER static void exportBackup() {
   if(!contents || !buffer){Serial.println("BACKUP_ERROR out_of_memory");return;}
   contents->practice=practice;contents->look=appearance;contents->bests=personalBests;
   contents->hasMotion=referenceMotion.valid();if(contents->hasMotion)contents->motion=referenceMotion;
-  contents->settings={inactivity.minutes(),brightnessPercent,rpmEstimator,sensorProfile,displayFlipped};
+  contents->settings={inactivity.minutes(),brightnessPercent,rpmEstimator,sensorProfile,displayFlipped,mountMode};
   const size_t n=DeviceBackup::encode(*contents,VERSION,*buffer);
   if(!n){Serial.println("BACKUP_ERROR out_of_memory");return;}
   Serial.printf("BACKUP_BEGIN format=%lu bytes=%u records=%u sessions=%u motion=%d runtime=%s\n",
@@ -998,7 +1191,7 @@ LOOP_HELPER static void finishRestore(const Snapshot &s) {
     bestStore.save(contents->bests) && (!contents->hasMotion || motionStore.save(contents->motion)) &&
     prefs.putUChar("sleep_min",settings.sleepMinutes)==1 && prefs.putUChar("bright_pct",settings.brightness)==1 &&
     RpmEstimatorSetting::save(prefs,settings.rpmMethod) && SensorProfileSetting::save(prefs,settings.sensorProfile) &&
-    DisplayFlipSetting::save(prefs,settings.flipped);
+    DisplayFlipSetting::save(prefs,settings.flipped) && MountOrientationSetting::save(prefs,settings.mount);
   if(!saved) {
     if(!acquisition.request(Action::CheckpointEnd))Serial.println("RESTORE_ERROR ADC checkpoint resume failed");
     // Earlier records may already hold the restored values; restoring again is safe.
@@ -1111,17 +1304,24 @@ void setup() {
   if(!clockOk)setCpuFrequencyMhz(240);
   Serial.printf("CPU_POLICY requested_mhz=%u actual_mhz=%lu apb_hz=%lu fallback=%d\n",
     unsigned(LAUNCHLAB_CPU_MHZ),(unsigned long)getCpuFrequencyMhz(),(unsigned long)getApbFrequency(),!clockOk);
+  CpuPower::begin();
+  CpuPower::Guard startupClock(CpuPower::Ui);
   auto cfg=M5.config();
   cfg.fallback_board=m5::board_t::board_M5StickS3;
   // internal_spk only configures the speaker; it stays unpowered until a sound plays.
   cfg.internal_mic=cfg.internal_rtc=false;cfg.internal_spk=cfg.internal_imu=true;
   cfg.external_imu=cfg.external_rtc=false;cfg.output_power=false;
+  // This UI uses A/B only. M5.update otherwise polls the unused BtnPWR IRQ
+  // via PM1 every 4 ms, adding I2C traffic and preventing PM1 idle timeout.
+  // PM1's physical power-key/reset operation remains a hardware function.
+  cfg.pmic_button=false;
   M5.begin(cfg);
   soundPlayer.configure();
   M5.Ex_I2C.release();
-  pm1WakeValid=M5.Power.M5pm1.readRegister(0x05,&pm1WakeFlags,1);
-  M5.Power.M5pm1.clearWakeSource();
+  pm1WakeValid=pm1Idle().read(0x05,&pm1WakeFlags,1);
+  if(!pm1Idle().run([](){return M5.Power.M5pm1.clearWakeSource();}))Serial.println("PM1_NOTICE wake_clear_failed");
   if(!shakeWake.clear())Serial.println("SHAKE_WAKE_NOTICE startup_disarm_failed");
+  if(!recoverWipe())return;
   prefs.begin("launchlab-mini",false);
   powerLogReady=powerPrefs.begin("ll-power",false);
   PowerDiagnostics::fresh(powerLog);
@@ -1176,6 +1376,7 @@ void setup() {
   if(savedBrightness>=10 && savedBrightness<=100 && savedBrightness%10==0)brightnessPercent=savedBrightness;
   else Serial.println("BRIGHTNESS_SETTING_NOTICE invalid_saved_value_using_40_pct");
   if(!DisplayFlipSetting::load(prefs,displayFlipped))Serial.println("DISPLAY_SETTING_NOTICE invalid_record_retained_using_flip_off_default");
+  if(!MountOrientationSetting::load(prefs,mountMode))Serial.println("MOUNT_SETTING_NOTICE invalid_record_retained_using_top_default");
   if(!appearanceStore.begin(appearance,"ll-appearance","cfg0","cfg1"))Serial.println("APPEARANCE_NOTICE invalid_record_retained_using_defaults");
   if(!bestStore.begin(personalBests,"ll-bests","best0","best1"))Serial.println("BEST_NOTICE invalid_record_retained_celebration_disabled");
   uint8_t pin=prefs.getUChar("ao_pin",1);
@@ -1191,7 +1392,10 @@ void setup() {
     latestMotion.number=last->number;latestMotion.rpm=last->rpm;
     if(referenceMotion.valid() && referenceMotion.fused && referenceMotion.number==last->number)latestMotion=referenceMotion;
   }
-  M5.Power.setExtOutput(extPower);
+  if(!pm1Idle().run([](){M5.Power.setExtOutput(extPower);return true;}))Serial.println("EXT_POWER_NOTICE startup_wake_failed");
+  const bool idleConfigured=pm1Idle().configure();
+  Serial.printf("PM1_IDLE_CONFIG ok=%d seconds=%u fallback_verified=%d\n",idleConfigured,
+    unsigned(pm1Idle().stats().seconds),pm1Idle().stats().fallbackVerified);
   M5.Display.setRotation(DisplayOrientation::rotation(displayFlipped));M5.Display.setBrightness(backlightValue());M5.Display.setTextSize(1);
   // Internal RAM first: at 80 MHz a PSRAM canvas made a recap frame about 8 ms
   // slower to compose and push. M5Canvas defaults to PSRAM, which stays the
@@ -1209,11 +1413,13 @@ void setup() {
   powerRecord(wakingFromStandby?PowerDiagnostics::Wake:PowerDiagnostics::Boot,loggedWake);
   powerLogTick=lastPowerSample=millis();
   Serial.printf("POWER_WAKE esp_cause=%d pm1_flags_valid=%d pm1_flags=0x%02x pending_standby=%d\n",int(wakeCause),pm1WakeValid,pm1WakeFlags,wakingFromStandby);
-  inactivity.touch(millis());
+  // Use hardware wake evidence; the optional diagnostic log can fail to save
+  // and must not determine the battery policy.
+  inactivity.begin(millis(),(pm1WakeValid && (pm1WakeFlags&0x20)) || wakeCause==ESP_SLEEP_WAKEUP_EXT0);
   Serial.printf("BOOT %s ppr=1 min_rpm=1000 min_mark=%.0f edge_fraction=%.2f sample_hz=50000 task_core=0\n",VERSION,
     StickS3SensorProfile::minMark(sensorProfile),StickS3SensorProfile::EDGE_SWING_FRACTION);
   Serial.printf("RPM_SETTING_BOOT selected=%s default=three_turn_peak legacy_history=retained_metric_not_encoded\n",RpmEstimator::name(rpmEstimator));
-  Serial.println("READY commands: p status, P power log, a/c tap A, h tap B, o hold A, b hold B, d diagnostics, n new session, u history export, K backup export, R backup restore, e motion export, q synthetic recap, E<0-4> best effect preview, t synthetic history, y/z storage check, v screen, w recorder export, x ext5V, g<N> GPIO, s stress, j UI stall");
+  Serial.println("READY commands: p status, P power log, C CPU power profiling, a/c tap A, h tap B, o hold A, b hold B, d diagnostics, n new session, u history export, K backup export, R backup restore, e motion export, q synthetic recap, E<0-4> best effect preview, t synthetic history, y/z storage check, v screen, w recorder export, x ext5V, g<N> GPIO, s stress, j UI stall");
 }
 
 // A pull, leaving the recap or closing the Sound editor silences at once;
@@ -1266,14 +1472,40 @@ LOOP_HELPER static void previewBestEffect(Appearance::Effect effect) {
 
 // USB commands, bounded per pass. A real call: its inlined handlers once made
 // up most of loop()'s frame.
+LOOP_HELPER static void exportCpuPower() {
+#if LAUNCHLAB_CPU_PM
+  // IDF's stdout is UART, whereas this device uses native USB. Buffer its
+  // profiling report so a read-only USB command can retrieve idle mode times.
+  constexpr size_t bytes=8192;
+  auto buffer=std::unique_ptr<char[]>(new(std::nothrow) char[bytes]);
+  FILE *stream=buffer?fmemopen(buffer.get(),bytes,"w"):nullptr;
+  if(!stream){Serial.println("CPU_PM_TRACE error=no_buffer");return;}
+  const int result=CpuPower::dump(stream);fflush(stream);
+  const long length=ftell(stream);fclose(stream);
+  Serial.printf("CPU_PM_TRACE begin enabled=%d error=%s\n",CpuPower::active(),esp_err_to_name(result));
+  if(length>0)Serial.write(reinterpret_cast<const uint8_t*>(buffer.get()),std::min<size_t>(size_t(length),bytes-1));
+  Serial.println("CPU_PM_TRACE end");
+#else
+  Serial.println("CPU_PM_TRACE enabled=0");
+#endif
+}
+
 LOOP_HELPER static void pollCommands(const Snapshot &s) {
   static char command[8]={};static uint8_t used=0;static bool effectPreview=false;
-  if(restoreRx.active())pollRestore(s);
+  if(controls.page==Controls::Page::Wipe || wipeBlocked) {
+    restoreRx.cancel();used=0;effectPreview=false;
+  } else if(restoreRx.active())pollRestore(s);
   // Bound incoming work; an unending USB stream cannot starve button/draw work.
   for(unsigned n=0;n<32 && !restoreRx.active() && Serial.available();++n) {
     const char c=Serial.read();
+    // Wipe confirmations and the final hold belong to physical buttons.
+    // Read-only status and cancellation cannot advance the confirmation.
+    if(controls.page==Controls::Page::Wipe || wipeBlocked) {
+      if(c=='p')status();else if(c=='b' && !wipeBlocked)cancelWipe();
+      continue;
+    }
     // Status polling is observational; other explicit USB actions count as use.
-    if(c!='p' && c!='P' && c!='\n' && c!='\r')inactivity.touch(millis());
+    if(c!='p' && c!='P' && c!='C' && c!='\n' && c!='\r')inactivity.touch(millis());
     if(effectPreview) {
       // E<digit> previews that effect; E<newline> the saved one.
       effectPreview=false;const unsigned digit=unsigned(c-'0');
@@ -1293,6 +1525,7 @@ LOOP_HELPER static void pollCommands(const Snapshot &s) {
       else {used=0;command[0]=0;Serial.println("COMMAND_ERROR too_long");}
     } else if(c=='p')status();
     else if(c=='P')exportPowerLog();
+    else if(c=='C')exportCpuPower();
     else if(c=='S'){
       inactivity.touch(millis()-inactivity.timeout());
       Serial.println("POWER_SLEEP_TEST requested=1 normal_save_and_sleep_path=1");
@@ -1301,7 +1534,9 @@ LOOP_HELPER static void pollCommands(const Snapshot &s) {
       if(acquisition.request(Action::IdleCheckpointBegin,s.launches)) {
         if(imuAcquisition.lock()) {
           const bool armed=shakeWake.arm(),restored=shakeWake.restore();
-          M5.Power.setExtOutput(extPower);imuAcquisition.unlock();
+          const bool extRestored=pm1Idle().run([](){M5.Power.setExtOutput(extPower);return true;});
+          imuAcquisition.unlock();
+          if(!extRestored)Serial.println("EXT_POWER_NOTICE test_restore_wake_failed");
           Serial.printf("SHAKE_WAKE_CHECK armed=%d restored=%d sleep=0\n",armed,restored);
         }
         acquisition.request(Action::CheckpointEnd);
@@ -1336,23 +1571,62 @@ LOOP_HELPER static void pollCommands(const Snapshot &s) {
     else if(c=='x') {
       // Explicit command only. No automatic voltage/power changes in sampling.
       if(!imuAcquisition.lock()){Serial.println("COMMAND_ERROR power_busy");continue;}
-      extPower=!extPower;M5.Power.setExtOutput(extPower);imuAcquisition.unlock();prefs.putBool("ext5v",extPower);
+      const bool nextExtPower=!extPower;
+      const bool changed=pm1Idle().run([&](){M5.Power.setExtOutput(nextExtPower);return true;});
+      imuAcquisition.unlock();
+      if(changed){extPower=nextExtPower;prefs.putBool("ext5v",extPower);}
+      else Serial.println("EXT_POWER_NOTICE toggle_wake_failed");
       acquisition.request(Action::Reset);dirty=true;status();
     } else if(c=='s'){stress=!stress;diagnostics=true;dirty=true;}
     else if(c=='j'){++uiStalls;delay(200);}
   }
 }
 
+#if LAUNCHLAB_MOTION_ADC_GATE
+LOOP_HELPER static void tickSensorIdle(uint32_t now,Snapshot &s) {
+  const auto imu=imuAcquisition.snapshot();
+  const bool blocked=usbAwake.inhibited(now) || inactivity.unusedShake() || wipeBlocked ||
+    controls.page!=Controls::Page::Main || historyPage || diagnostics || tournamentMode ||
+    motionPending || launchFeedback.shown() || practiceStore.pending(practice) ||
+    bestStore.pending(personalBests) || !imuAcquisition.running() || Serial.available();
+  const bool opticalIdle=s.ready && !s.suspended && !s.signalFault && s.opticalIdle &&
+    s.phase==AnalogTachometer::Phase::Ready;
+  const auto action=sensorIdle.decide(now,esp_timer_get_time(),imu.activity,inactivity.elapsed(now),
+    s.resting,opticalIdle,blocked);
+  if(action==SensorIdle::Action::None)return;
+  const bool pause=action==SensorIdle::Action::Pause;
+  const bool ok=acquisition.request(pause?Action::IdlePause:Action::IdleResume,s.launches);
+  sensorIdle.attempted(now,action,ok);s=acquisition.snapshot();dirty=true;
+  Serial.printf("SENSOR_IDLE_CHANGE pause=%d ok=%d resting=%d state=%s sensor_power=on_shared_rail\n",
+    pause,ok,s.resting,s.stateName());
+}
+#endif
+
 void loop() {
-  if(imuAcquisition.lock()){M5.update();imuAcquisition.unlock();}
-  pollLevel(millis());
+  CpuPower::Guard clock(CpuPower::Ui);
+  bool buttonsFresh=false;
+  if(imuAcquisition.lock()){M5.update();imuAcquisition.unlock();buttonsFresh=true;}
   Snapshot s=acquisition.snapshot();
-  if(M5.BtnA.isPressed() || M5.BtnB.isPressed() || M5.BtnA.wasReleased() || M5.BtnB.wasReleased())
+  if(buttonsFresh && (M5.BtnA.isPressed() || M5.BtnB.isPressed() || M5.BtnA.wasReleased() || M5.BtnB.wasReleased()))
     inactivity.touch(millis());
-  const bool clickedA=gestureA.click(M5.BtnA.wasPressed(),M5.BtnA.wasHold(),M5.BtnA.wasClicked());
-  const bool clickedB=gestureB.click(M5.BtnB.wasPressed(),M5.BtnB.wasHold(),M5.BtnB.wasClicked());
-  if(M5.BtnA.wasHold())holdA();else if(clickedA)buttonA();
-  if(M5.BtnB.wasHold())holdB();else if(clickedB)buttonB();
+  if(wipeBlocked) {
+    pollWipe(millis(),buttonsFresh,s);
+    tickDisplayPower(millis(),s);
+    if(dirty){draw(s);lastDraw=millis();dirty=false;}
+    clock.release();delay(IdlePowerPolicy::UI_POLL_MS);return;
+  }
+  pollLevel(millis());
+#if LAUNCHLAB_MOTION_ADC_GATE
+  tickSensorIdle(millis(),s);
+#endif
+  if(controls.page==Controls::Page::Wipe)pollWipe(millis(),buttonsFresh,s);
+  else if(buttonsFresh) {
+    const bool clickedA=gestureA.click(M5.BtnA.wasPressed(),M5.BtnA.wasHold(),M5.BtnA.wasClicked());
+    const bool clickedB=gestureB.click(M5.BtnB.wasPressed(),M5.BtnB.wasHold(),M5.BtnB.wasClicked());
+    if(M5.BtnA.wasHold())holdA();else if(clickedA)buttonA();
+    if(M5.BtnB.wasHold())holdB();else if(clickedB)buttonB();
+  }
+  if(wipeBlocked)return;
   pollCommands(s);
   Snapshot event;
   while(acquisition.takeEvent(event)) {
@@ -1390,8 +1664,12 @@ void loop() {
   tickPowerLog(now,s);
   pollUsbAwake(now,s);
   tickSound(s);
+#if LAUNCHLAB_MOTION_ADC_GATE
+  tickSensorIdle(millis(),s);
+#endif
   if(restorePreview)previewSetting();
   autoPowerOff(now,s);
+  tickDisplayPower(millis(),acquisition.snapshot());
   if(newSessionAt && now-newSessionAt>=1500){newSessionAt=0;dirty=true;}
   if(stress && now-lastDraw>=50)dirty=true;
   if((M5.BtnA.isPressed() || M5.BtnB.isPressed()) && now-lastDraw>=50)dirty=true;
@@ -1416,5 +1694,7 @@ void loop() {
     draw(s);lastDraw=millis();dirty=false;
   }
   if(Serial && now-lastStatus>=2000){lastStatus=now;status();}
-  delay(1);
+  // ADC and IMU owners retain their own clocks and priorities. Avoid waking
+  // this UI task 1,000 times/second merely to inspect unchanged snapshots.
+  clock.release();delay(IdlePowerPolicy::UI_POLL_MS);
 }

@@ -185,7 +185,7 @@ private:
     }
     return top[2];
   }
-  uint64_t rise=0,fall=0,railSince=0,quietSince=0,lastCycle=0,slowStartUs=0;
+  uint64_t rise=0,fall=0,railSince=0,quietSince=0,lastCycle=0,slowStartUs=0,lastStrongCycle=0;
   uint64_t blankFrom=0,blankUntil=0;
   uint32_t periods[3]={},nPeriods=0,lastPeriod=0,slowCount=0,motionPeriod=0,motionPreviousPeriod=0;
   float motionDuty=0,motionAmplitude=0;
@@ -256,8 +256,8 @@ private:
       }
     }
   }
-  void clearSequence(){nPeriods=lastPeriod=slowCount=0;lastCycle=slowStartUs=0;}
-  void finish(End reason) {
+  void clearSequence(){nPeriods=lastPeriod=slowCount=0;lastCycle=slowStartUs=lastStrongCycle=0;}
+  void finish(End reason,uint64_t boundary=0) {
     // The burst ends at the inferred boundary, not at the later instant that
     // a gap / second slow cycle confirms it.
     // No following full cycle is available at a terminal gap. Keep a clean
@@ -265,7 +265,7 @@ private:
     // A terminal subdivision with identical samples remains indistinguishable.
     // Commit before revision/launch publication; never revise a saved result.
     commitSinglePending();
-    burstEndUs=reason==End::Slowdown?slowStartUs:lastCycle;
+    burstEndUs=boundary?boundary:reason==End::Slowdown?slowStartUs:lastCycle;
     ended=reason;phase=Phase::Hold;resultUs=nowUs;
     resultValid=peakRpm>0;resultRpm=peakRpm;resultRevision++;
     if(resultValid)launches++;
@@ -293,6 +293,13 @@ private:
         if(phase==Phase::Launch)finish(End::Gap);else clearSequence();
       }
     }
+    // A shape-valid but subthreshold tail is background, not evidence that
+    // the pull continues. Its edges can otherwise suppress the ordinary gap
+    // forever. Allow a full quiet second for a temporarily weak signal to
+    // recover, then publish the retained peak at the last strong cycle.
+    // minMark=0 keeps the earlier weak-optics detector behavior unchanged.
+    if(phase==Phase::Launch && minMark>0 && lastStrongCycle && nowUs-lastStrongCycle>=QUIET_US)
+      finish(End::Gap,lastStrongCycle);
     if((phase==Phase::Hold || phase==Phase::Settling) && nowUs-quietSince>=QUIET_US) {
       const bool afterPull=phase==Phase::Hold && resultValid;
       phase=Phase::Ready;clearSequence();
@@ -338,14 +345,19 @@ private:
       signalContrast<=validatedAmplitude*2.5f &&
       validatedAmplitude<=signalContrast*2.5f;
     resolveSingleNeighbor(period,credible);
-    if(adjacent && matching) {
+    if(adjacent && matching && signalContrast>=minMark && motionAmplitude>=minMark) {
       if(phase==Phase::Hold){quietSince=nowUs;rearmExtensions++;}
       else if(phase==Phase::Launch)quietSince=nowUs;
     }
     motionPreviousPeriod=previousPeriod;
     motionPeriod=period;motionDuty=duty;motionAmplitude=signalContrast;motionStamp=stamp;
-    if(lastCycle && stamp-lastCycle>uint64_t(period)*3/2)clearSequence();
+    if(lastCycle && stamp-lastCycle>uint64_t(period)*3/2) {
+      const uint64_t strongCycle=lastStrongCycle;
+      clearSequence();
+      if(phase==Phase::Launch)lastStrongCycle=strongCycle;
+    }
     lastCycle=stamp;
+    if(phase==Phase::Launch && signalContrast>=minMark)lastStrongCycle=stamp;
     if(phase==Phase::Launch && sustainedPeakRpm>0) {
       // A one-turn surge must not make ordinary following turns look like
       // rewind. End detection still uses the established three-turn speed.
@@ -378,16 +390,19 @@ private:
         *ampBounds.first<=0 || *ampBounds.second>*ampBounds.first*2.5f) {
       inconsistentWindows++;return;
     }
-    quietSince=nowUs; // Three matching cycles distinguish motion from stray dips.
+    const bool strong=*ampBounds.first>=minMark;
+    // Consistency alone cannot make weak electrical/optical noise postpone
+    // startup or rearm. Strong slow rewind still requires fresh quiet.
+    if(strong)quietSince=nowUs;
     if(phase!=Phase::Ready && phase!=Phase::Launch)return;
     const float rpm=180000000.0f/(periods[0]+periods[1]+periods[2]);
-    const bool strong=*ampBounds.first>=minMark;
     const bool starting=phase==Phase::Ready;
     if(phase==Phase::Ready) {
       if(rpm<MIN_LAUNCH_RPM){slowWindows++;return;}
       if(!strong){weakWindows++;return;}
       burstStartUs=stamp-uint64_t(periods[0])-periods[1]-periods[2];
       phase=Phase::Launch;attempts++;peakRpm=sustainedPeakRpm=singlePeakRpm=sustainedPeakAmplitude=singlePeakAmplitude=0;cycles=0;revolutions=3;startNoiseBand=noiseBand;
+      lastStrongCycle=stamp;
       resultValid=false;resultRpm=0;ended=End::None;
     }
     if(!strong){weakWindows++;return;} // Weak windows never set the peak.

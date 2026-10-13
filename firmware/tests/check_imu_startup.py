@@ -23,6 +23,7 @@ def extract(text, signature):
 
 prefix = r'''
 #include "analog_tachometer.h"
+#include "mount_orientation.h"
 #include <cmath>
 #include <cassert>
 #include <cstdint>
@@ -71,6 +72,7 @@ class FakeAcquisition {
   static void entry(void*){}
 public:
   bool running(){return task_!=nullptr;}
+  bool setMount(MountOrientation::Mode){return true;}
 '''
 globals_ = r'''
 };
@@ -78,6 +80,7 @@ static FakeAcquisition imuAcquisition;
 static constexpr uint32_t MOTION_INIT_RETRY_MS=5000,MOTION_DATA_TIMEOUT_MS=250;
 static uint32_t motionInitAttempts=0,lastMotionInit=0;
 static bool motionInitPaired=false,motionInitSuccess=false,motionPending=false,dirty=false;
+static MountOrientation::Mode mountMode=MountOrientation::Mode::Top;
 struct Snapshot {AnalogTachometer::Phase phase=AnalogTachometer::Phase::Ready;};
 '''
 tests = r'''
@@ -145,5 +148,6 @@ with tempfile.TemporaryDirectory(prefix='launchlab-imu-startup-') as temporary:
     (temporary / 'test.cpp').write_text(cpp)
     subprocess.run(['c++', '-std=c++17', '-O1', '-g', '-fsanitize=address,undefined',
                     '-fno-omit-frame-pointer', '-I' + str(root / 'LaunchLabRpm'),
+                    '-I' + str(root / 'LaunchLabMini'),
                     str(temporary / 'test.cpp'), '-o', str(temporary / 'test')], check=True)
     subprocess.run([str(temporary / 'test')], check=True)
