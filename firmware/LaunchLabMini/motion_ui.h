@@ -97,6 +97,19 @@ inline void feedback(lgfx::LGFXBase &g,const LaunchMotion::Trace &trial,
     g.drawRect(cx-39,71,79,79,c.muted);
     g.setTextColor(c.muted,c.background);g.drawString(capturing?"Capturing":unavailableTilt(trial.quality),cx,104,1);
   }
+  // Direction inferred from the recorded fused end tilt, relative to the stance.
+  if(trial.valid() && trial.fused && !capturing && trial.directionValid) {
+    const int dx=lroundf(trial.directionX*30),dy=lroundf(-trial.directionY*30);
+    const int ax=cx,ay=194,bx=ax+dx,by=ay+dy;
+    g.setTextDatum(top_center);g.setTextColor(c.text,c.background);g.drawString("Initial direction",cx,181,1);
+    g.drawCircle(ax,ay,3,c.muted);g.drawLine(ax,ay,bx,by,c.accent);
+    const float length=std::sqrt(float(dx*dx+dy*dy));
+    if(length>1) {
+      const int hx=lroundf(bx-7*dx/length),hy=lroundf(by-7*dy/length);
+      const float px=-float(dy)/length,py=float(dx)/length;
+      g.fillTriangle(bx,by,lroundf(hx+3*px),lroundf(hy+3*py),lroundf(hx-3*px),lroundf(hy-3*py),c.accent);
+    }
+  }
   for(unsigned i=0;i<2;++i) {
     const int bx=i?99:36,by=211,radius=17;
     const auto level=StickS3Level::forDisplay(i?trial.endLevel:trial.startLevel,flipEnabled);
