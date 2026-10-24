@@ -81,6 +81,10 @@ struct Trace {
   static constexpr int32_t NO_ISSUE=INT32_MIN;int32_t issueMs=NO_ISSUE;
   float gravity[3]={};
   StickS3Level::Reading startLevel,endLevel;
+  // Relative horizontal launch direction derived from fused release tilt.
+  // x=rightward, y=forward (toward the opponent); values are normalized.
+  float directionX=0,directionY=0;
+  bool directionValid=false;
   Point points[POINTS];
   bool valid()const{return quality==Quality::Valid && count>=12 && count<=POINTS &&
     std::isfinite(rpm) && rpm>=1000 && durationMs>0 && durationMs<=2500;}
@@ -216,10 +220,20 @@ inline bool interpolate(const Trace &t,int ms,Interpolated &out) {
 // Recap never reads the current sensor and never estimates travel distance.
 inline void recordLevels(Trace &t) {
   t.startLevel={};t.endLevel={};
+  t.directionX=t.directionY=0;t.directionValid=false;
   if(!t.valid())return;
   for(unsigned i=0;i<2;++i) {
     Interpolated pose;if(!interpolate(t,i?int(t.durationMs):0,pose))continue;
     auto &reading=i?t.endLevel:t.startLevel;reading=levelAt(pose.q,t.gravity);
+  }
+  // The end-of-pull tilt is the simple, relative initial-direction cue.
+  if(t.endLevel.valid()) {
+    const float x=t.endLevel.right;
+    const float y=-t.endLevel.down;
+    const float magnitude=std::hypot(x,y);
+    if(std::isfinite(magnitude) && magnitude>=0.08f) {
+      t.directionX=x/magnitude;t.directionY=y/magnitude;t.directionValid=true;
+    }
   }
 }
 struct Difference {bool valid=false;float turnDegrees=0,accelG=0,gyroDps=0,rpm=0,rpmPercent=0;int durationMs=0;unsigned overlap=0;};
@@ -247,11 +261,15 @@ inline uint32_t get32(const uint8_t *p){uint32_t v=0;for(unsigned i=0;i<4;++i)v|
 inline void put16(uint8_t *p,int16_t v){p[0]=uint8_t(v);p[1]=uint8_t(uint16_t(v)>>8);}
 inline int16_t get16(const uint8_t *p){return int16_t(uint16_t(p[0])|(uint16_t(p[1])<<8));}
 inline void encode(const Trace &t,uint32_t generation,Image &image) {
-  image.fill(0);put32(image.data(),0x544f4d4c);put32(image.data()+4,4);put32(image.data()+8,t.count);
+  image.fill(0);put32(image.data(),0x544f4d4c);put32(image.data()+4,5);put32(image.data()+8,t.count);
   put32(image.data()+12,t.number);uint32_t rpm;std::memcpy(&rpm,&t.rpm,4);put32(image.data()+16,rpm);
   put32(image.data()+20,t.durationMs);put32(image.data()+24,generation);
   for(unsigned j=0;j<3;++j)put16(image.data()+28+j*2,int16_t(std::lround(t.gravity[j]*1000)));
   image[34]=t.stationaryBias;image[35]=t.fused;image[52]=uint8_t(t.saturated)|uint8_t(t.bridged<<1);
+  // Schema 5 stores the derived direction in previously reserved bytes.
+  image[53]=t.directionValid?1:0;
+  put16(image.data()+54,int16_t(std::lround(std::max(-1.0f,std::min(1.0f,t.directionX))*16384)));
+  put16(image.data()+56,int16_t(std::lround(std::max(-1.0f,std::min(1.0f,t.directionY))*16384)));
   for(unsigned i=0;i<2;++i) {
     const auto &level=i?t.endLevel:t.startLevel;auto *p=image.data()+36+i*8;
     if(level.valid()) {
@@ -269,9 +287,10 @@ inline void encode(const Trace &t,uint32_t generation,Image &image) {
 inline bool decode(const Image &image,Trace &out,uint32_t &generation) {
   const auto *p=image.data();
   const uint32_t schema=get32(p+4);
-  if(get32(p)!=0x544f4d4c || (schema!=1 && schema!=2 && schema!=3 && schema!=4) || get32(p+IMAGE_BYTES-4)!=checksum(p,IMAGE_BYTES-4))return false;
+  if(get32(p)!=0x544f4d4c || (schema!=1 && schema!=2 && schema!=3 && schema!=4 && schema!=5) || get32(p+IMAGE_BYTES-4)!=checksum(p,IMAGE_BYTES-4))return false;
   const unsigned count=get32(p+8);if(count<12 || count>Trace::POINTS)return false;
   Trace t;t.fused=schema>=4 && p[35]!=0;t.saturated=schema>=4 && (p[52]&1);t.bridged=schema>=4 && (p[52]&2);t.stationaryBias=schema==1 || p[34]!=0;t.count=count;t.number=get32(p+12);const uint32_t rpm=get32(p+16);std::memcpy(&t.rpm,&rpm,4);
+  if(schema>=5){t.directionValid=p[53]!=0;t.directionX=get16(p+54)/16384.0f;t.directionY=get16(p+56)/16384.0f;}
   t.durationMs=get32(p+20);if(!std::isfinite(t.rpm) || t.rpm<1000 || t.durationMs>2500)return false;
   for(unsigned j=0;j<3;++j)t.gravity[j]=get16(p+28+j*2)*.001f;
   for(unsigned i=0;i<count;++i) {
