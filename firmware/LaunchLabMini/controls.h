@@ -6,7 +6,7 @@
 // Navigation never starts/stops measurement. Effects are handled by the sketch
 // after the visible state changes; setting writes only happen on Apply.
 namespace Controls {
-enum class Page:uint8_t {Main,Menu,HistoryMenu,History,Battery,Settings,Edit,NewSession,Tournament,Wipe};
+enum class Page:uint8_t {Main,Menu,HistoryMenu,History,Battery,Settings,Edit,NewSession,Tournament,Wipe,Direction};
 enum class Effect:uint8_t {None,Recap,BeginEdit,Preview,Apply,CancelEdit,Older,NewSession,Tournament,BeginWipe,ConfirmWipe,CancelWipe};
 enum class Setting:uint8_t {Sleep,Rpm,Brightness,Flip,Sensor,Theme,BestEffect,Celebrate,Sound,Mount,WipeAll};
 static constexpr unsigned EDITABLE_SETTING_COUNT=10,SETTING_COUNT=11;
@@ -31,6 +31,7 @@ struct State {
           case 2:page=Page::Battery;break;
           case 3:page=Page::Settings;break;
           case 4:page=Page::Tournament;return Effect::Tournament;
+          case 5:page=Page::Direction;break;
           default:page=Page::Main;break;
         }break;
       case Page::HistoryMenu:page=history<3?Page::History:Page::Menu;break;
@@ -44,13 +45,14 @@ struct State {
       case Page::NewSession:page=Page::Menu;return startSession?Effect::NewSession:Effect::None;
       case Page::Tournament:break;
       case Page::Wipe:return Effect::ConfirmWipe;
+      case Page::Direction:page=Page::Menu;break;
     }
     return Effect::None;
   }
   Effect tapB() {
     switch(page) {
       case Page::Main:page=Page::Menu;menu=0;break;
-      case Page::Menu:menu=(menu+1)%6;break;
+      case Page::Menu:menu=(menu+1)%7;break;
       case Page::HistoryMenu:history=(history+1)%4;break;
       case Page::History:return Effect::Older;
       case Page::Settings:setting=(setting+1)%(SETTING_COUNT+1);break;
@@ -70,7 +72,7 @@ struct State {
         }return Effect::Preview;
       case Page::NewSession:startSession=!startSession;break;
       case Page::Tournament:return Effect::Tournament;
-      case Page::Battery:break;
+      case Page::Battery:case Page::Direction:break;
       case Page::Wipe:return Effect::CancelWipe;
     }
     return Effect::None;
@@ -79,7 +81,7 @@ struct State {
     switch(page) {
       case Page::Edit:page=Page::Settings;return Effect::CancelEdit;
       case Page::History:page=Page::HistoryMenu;break;
-      case Page::HistoryMenu:case Page::Battery:case Page::Settings:case Page::NewSession:page=Page::Menu;break;
+      case Page::HistoryMenu:case Page::Battery:case Page::Settings:case Page::NewSession:case Page::Direction:page=Page::Menu;break;
       case Page::Menu:page=Page::Main;break;
       case Page::Main:return recap?Effect::Recap:Effect::None;
       case Page::Tournament:break;
@@ -136,7 +138,7 @@ inline bool decodeWake(uint32_t value,State &out,uint8_t &tournamentView) {
   if(setting==back)setting=SETTING_COUNT;
   else if(wideMagic!=WAKE_MAGIC && setting>=unsigned(Setting::Celebrate))++setting;
   state.setting=uint8_t(setting);
-  if(uint8_t(state.page)>uint8_t(Page::Wipe) || state.page==Page::Edit || state.page==Page::Wipe || state.menu>=6 || state.setting>SETTING_COUNT)return false;
+  if(uint8_t(state.page)>uint8_t(Page::Direction) || state.page==Page::Edit || state.page==Page::Wipe || state.menu>=7 || state.setting>SETTING_COUNT)return false;
   out=state;return true;
 }
 }
