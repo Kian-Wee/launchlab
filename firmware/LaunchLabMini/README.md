@@ -41,7 +41,7 @@ Measurement runs on every screen while active. After 30 seconds of stillness, RE
 
 - **Main:** A shows the latest launch recap; B opens the menu. Hold A for one second to enter tournament mode.
 - **Menus:** A opens or applies the highlighted item; B moves to the next choice; hold B goes back one level or cancels an edit. Every list has a Back choice.
-- **Menu items:** History, New session, Battery, Settings, Tournament and Back. History offers Launches, Pull trend and Session trend. New session starts on the next accepted pull and keeps earlier launches.
+- **Menu items:** History, New session, Battery, Settings, Tournament, Launch direction and Back. History offers Launches, Pull trend and Session trend. New session starts on the next accepted pull and keeps earlier launches. **Launch direction** shows an eight-way, relative estimate from the last launch's recorded end-tilt; it is a tilt-based hint, not a measured Beyblade path.
 - **Settings:** Sleep after, RPM method, Brightness, Flip display, Sensor profile, Theme, Best effect, Sound, Mounting and Wipe all. In an editor the value is centred, with a faint `B next option ->` hint beneath it: B cycles the value, A applies, hold B cancels.
   - Sleep after: 1–10 minutes, 3-minute default.
   - RPM method: 3-turn average (default) or 1-turn peak. The launch floor is 1,000 RPM.
