@@ -343,6 +343,7 @@ static void syncNavigation() {
   historyPage=controls.page!=Controls::Page::Main && !tournamentMode;
   if(controls.page==Controls::Page::History)historyView=PracticeUI::View(controls.history);
   else if(controls.page==Controls::Page::Battery)historyView=PracticeUI::View::Battery;
+  else if(controls.page==Controls::Page::Direction)historyView=PracticeUI::View::Recent;
   else if(controls.page==Controls::Page::Settings || controls.page==Controls::Page::Edit || controls.page==Controls::Page::Wipe)historyView=PracticeUI::View::Settings;
   dirty=true;
 }
@@ -724,6 +725,9 @@ LOOP_HELPER static void draw(const Snapshot &s) {
         break;
       case Controls::Page::NewSession:ControlsUI::session(view,controls.startSession);break;
       case Controls::Page::Battery:drawBattery(view,millis());break;
+      case Controls::Page::Direction:
+        MotionUI::direction(view,latestMotion,motionPending,visibleDisplayFlipped(),colors);
+        ControlsUI::footer(view,"A Menu  Hold B Back");break;
       case Controls::Page::Wipe:ControlsUI::wipe(view,wipeConfirmation,millis(),wipeFailed,wipeBlocked,wipeComplete);break;
       default:PracticeUI::draw(view,demo?demoPractice:practice,historyView,historyOffset,demo,colors);break;
     }

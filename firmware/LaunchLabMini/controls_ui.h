@@ -10,7 +10,7 @@
 #include "wipe_confirmation.h"
 
 namespace ControlsUI {
-static constexpr const char *MENU[]={"History","New session","Battery","Settings","Tournament","Back"};
+static constexpr const char *MENU[]={"History","New session","Battery","Settings","Tournament","Launch direction","Back"};
 static constexpr const char *HISTORY[]={"Launches","Pull trend","Session trend","Back"};
 static constexpr const char *SETTINGS[]={"Sleep after","RPM method","Brightness","Flip display","Sensor profile","Theme","Best effect","Celebrate","Sound","Mounting","Wipe all","Back"};
 // Set by the UI owner before rendering: the visible theme's colors, the

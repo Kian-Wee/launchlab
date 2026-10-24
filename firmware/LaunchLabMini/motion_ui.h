@@ -76,6 +76,63 @@ inline void spatial(lgfx::LGFXBase &g,const LaunchMotion::Trace &trial,
   }
 }
 
+// A separate page for the last launch's initial direction, inferred only from
+// the saved fused end-tilt. This deliberately does not estimate displacement.
+inline void direction(lgfx::LGFXBase &g,const LaunchMotion::Trace &trial,
+                      bool capturing,bool flipEnabled,
+                      const Palette::Colors &c=Palette::builtIn(0x07ff,true)) {
+  const int cx=g.width()/2,cy=122,radius=42;
+  g.setTextDatum(top_center);
+  g.setTextColor(c.text,c.background);g.drawString("Launch direction",cx,8,2);
+  if(trial.number) {
+    char number[24];snprintf(number,sizeof(number),"Launch #%lu",(unsigned long)trial.number);
+    g.setTextColor(c.muted,c.background);g.drawString(number,cx,29,1);
+  }
+  if(capturing) {
+    g.setTextColor(c.warning,c.background);g.drawString("Capturing tilt...",cx,105,2);
+    return;
+  }
+  if(!trial.valid() || !trial.fused || !trial.endLevel.valid()) {
+    g.setTextColor(c.warning,c.background);
+    g.drawString(trial.quality==LaunchMotion::Quality::Missing?"No launch tilt":unavailableTilt(trial.quality),cx,106,1);
+    return;
+  }
+  const auto tilt=StickS3Level::forDisplay(trial.endLevel,flipEnabled);
+  g.setTextColor(c.muted,c.background);
+  g.drawCircle(cx,cy,radius,c.muted);
+  g.drawFastHLine(cx-radius,cy,2*radius+1,c.faint);
+  g.drawFastVLine(cx,cy-radius,2*radius+1,c.faint);
+  g.drawString("FORWARD",cx,59,1);
+  g.drawString("BACKWARD",cx,170,1);
+  g.setTextDatum(middle_left);g.drawString("L",8,cy-4,1);
+  g.setTextDatum(middle_right);g.drawString("R",g.width()-8,cy-4,1);
+  g.setTextDatum(top_center);
+  if(tilt.degrees<3.0f || std::hypot(tilt.right,tilt.down)<0.08f) {
+    g.fillCircle(cx,cy,4,c.accent);
+    g.setTextColor(c.accent,c.background);g.drawString("CENTRE",cx,190,2);
+  } else {
+    // The level indicator's screen-down component corresponds to backward
+    // tilt in this relative diagram. Forward is therefore -down.
+    float x=tilt.right,forward=-tilt.down;
+    const float magnitude=std::hypot(x,forward);
+    x/=magnitude;forward/=magnitude;
+    const int dx=lroundf(x*31),dy=lroundf(-forward*31);
+    const int ex=cx+dx,ey=cy+dy;
+    g.drawCircle(cx,cy,3,c.muted);g.drawLine(cx,cy,ex,ey,c.accent);
+    const float length=std::sqrt(float(dx*dx+dy*dy));
+    if(length>1) {
+      const int hx=lroundf(ex-7*dx/length),hy=lroundf(ey-7*dy/length);
+      const float px=-float(dy)/length,py=float(dx)/length;
+      g.fillTriangle(ex,ey,lroundf(hx+3*px),lroundf(hy+3*py),lroundf(hx-3*px),lroundf(hy-3*py),c.accent);
+    }
+    float angle=std::atan2(x,forward)*57.2957795f;if(angle<0)angle+=360;
+    const char *label=angle<22.5f || angle>=337.5f?"FORWARD":
+      angle<67.5f?"FRONT-RIGHT":angle<112.5f?"RIGHT":angle<157.5f?"BACK-RIGHT":
+      angle<202.5f?"BACKWARD":angle<247.5f?"BACK-LEFT":angle<292.5f?"LEFT":"FRONT-LEFT";
+    g.setTextColor(c.accent,c.background);g.drawString(label,cx,190,2);
+  }
+  g.setTextColor(c.muted,c.background);g.drawString("Estimated from launch tilt",cx,212,1);
+}
 inline void feedback(lgfx::LGFXBase &g,const LaunchMotion::Trace &trial,
                      bool capturing,bool demo=false,float progress=1,bool flipEnabled=false,
                      const Palette::Colors &c=Palette::builtIn(0x07ff,true),const char *badge=nullptr) {
